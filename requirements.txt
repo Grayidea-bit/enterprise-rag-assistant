@@ -1,0 +1,5 @@
+pydantic==2.13.4
+pydantic-settings==2.11.0
+PyYAML==6.0.3
+dotenv==0.9.9
+pydantic-ai==1.102.0
