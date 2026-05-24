@@ -1,11 +1,5 @@
-llm_provider: deepseek
-ingest_provider: deepseek
-embedding_provider: ollama
-
 # Ollama
 ollama_base_url: http://127.0.0.1:11434
-ollama_llm_model:
-ollama_ingest_model:
 ollama_embedding_model: bge-m3
 ollama_num_ctx: 8192
 
@@ -14,11 +8,5 @@ deepseek_url: https://api.deepseek.com
 deepseek_llm_model: deepseek-v4-flash
 deepseek_ingest_model: deepseek-v4-flash
 
-# OpenAI
-openai_llm_model: gpt-5.4
-openai_ingest_model: gpt-5.4-mini
-openai_embedding_model: text-embedding-3-small
-
-# Anthropic
-anthropic_llm_model: claude-sonnet-4-6
-anthropic_ingest_model: claude-haiku-4-5-20251001
+prompt: |
+  TESTING
