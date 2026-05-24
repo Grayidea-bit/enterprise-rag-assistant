@@ -1,7 +1,7 @@
-from llm import model
 from pydantic_ai import Agent
 
 from config import app_settings
+from core.llm import model
 
 tools = []
 

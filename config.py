@@ -14,6 +14,10 @@ ENV_PATH = Path(__file__).parent / ".env"
 
 class EnvSettings(BaseSettings):
     DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek API Key")
+    DATABASE_URL: str = Field(
+        default="postgresql://graytsao@localhost:5432/enterprise_rag",
+    )
+
     model_config = SettingsConfigDict(
         env_file=ENV_PATH,
         env_file_encoding="utf-8",
@@ -54,7 +58,6 @@ class AppConfig(BaseSettings):
     prompt: str | None = Field(
         default="",
     )
-
     model_config = SettingsConfigDict(
         yaml_file=YAML_PATH,
         yaml_file_encoding="utf-8",
