@@ -1,12 +1,7 @@
-# Ollama
-ollama_base_url: http://127.0.0.1:11434
-ollama_embedding_model: bge-m3
-ollama_num_ctx: 8192
-
-# DeepSeek
-deepseek_url: https://api.deepseek.com
-deepseek_llm_model: deepseek-v4-flash
-deepseek_ingest_model: deepseek-v4-flash
+# NVIDIA NIM（OpenAI 相容端點：https://integrate.api.nvidia.com/v1）
+llm_model_name: meta/llama-3.3-70b-instruct
+embedding_model_name: baai/bge-m3
+embedding_dim: 1024
 
 prompt: |
   TESTING

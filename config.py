@@ -13,7 +13,11 @@ ENV_PATH = Path(__file__).parent / ".env"
 
 
 class EnvSettings(BaseSettings):
-    DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek API Key")
+    LLM_URL: str = Field(
+        default="https://integrate.api.nvidia.com/v1",
+        description="LLM CONN URL（NVIDIA NIM OpenAI 相容端點）",
+    )
+    LLM_API_KEY: str = Field(default="", description="LLM API Key（NIM nvapi- 金鑰）")
     DATABASE_URL: str = Field(
         default="postgresql://graytsao@localhost:5432/enterprise_rag",
     )
@@ -27,32 +31,18 @@ class EnvSettings(BaseSettings):
 
 
 class AppConfig(BaseSettings):
-    # ollama
-    ollama_base_url: str = Field(
-        default="http://127.0.0.1:11434",
-        description="Ollama 服務位址",
-    )
-    ollama_embedding_model: str | None = Field(
+    # NVIDIA NIM（chat 與 embedding 共用同一個 OpenAI 相容端點與金鑰）
+    llm_model_name: str | None = Field(
         default=None,
-        description="Ollama Embedding 模型名稱",
+        description="NIM Chat 模型名稱",
     )
-    ollama_num_ctx: int = Field(
-        default=8192,
-        description="Ollama context window 大小（num_ctx），透傳給 /v1 endpoint",
+    embedding_model_name: str | None = Field(
+        default=None,
+        description="NIM Embedding 模型名稱",
     )
-
-    # deepseek
-    deepseek_url: str = Field(
-        default="https://api.deepseek.com",
-        description="DeepSeek API 位址",
-    )
-    deepseek_llm_model: str = Field(
-        default="deepseek-v4-flash",
-        description="DeepSeek 主推理模型名稱",
-    )
-    deepseek_ingest_model: str = Field(
-        default="deepseek-v4-flash",
-        description="DeepSeek 資料處理 ingest 模型名稱",
+    embedding_dim: int = Field(
+        default=1024,
+        description="Embedding 向量維度（需與 schema 的 VECTOR(n) 一致）",
     )
 
     prompt: str | None = Field(
