@@ -46,8 +46,8 @@ async def _database() -> AsyncIterator[None]:
             "整合測試需要 PostgreSQL(docker compose up -d db)",
             allow_module_level=True,
         )
+    await upgrade()  # db_startup 也會跑,這裡明示順序:migration 先於開池
     await db_startup()
-    await upgrade()
     yield
     await db_shutdown()
 

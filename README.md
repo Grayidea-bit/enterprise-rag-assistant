@@ -249,6 +249,11 @@ Each file runs in its own transaction and is only recorded on success, so a fail
 migration leaves neither half-applied SQL nor a false "applied" record. Concurrent
 instances are serialised with a Postgres advisory lock.
 
+Migrations deliberately use their **own connection**, not the application's pool. The
+pool registers the pgvector type on every connection it hands out, which fails on a
+database where the extension does not exist yet — so the migration that creates the
+extension could never run. `db_startup()` therefore migrates before opening the pool.
+
 `AUTO_MIGRATE=true` applies pending migrations during app startup — Compose sets this
 so `docker compose up` works out of the box. It defaults to **false** elsewhere,
 because in a real deployment migrations should be a deliberate, reviewable step rather

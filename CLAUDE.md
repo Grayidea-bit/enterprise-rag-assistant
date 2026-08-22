@@ -269,6 +269,12 @@ Module roles:
   tenant_id = …` is applied, so a sparse tenant can get fewer than `k` rows.
   `hnsw.iterative_scan` (pgvector 0.8+) is set per-transaction via `SET LOCAL` —
   never plain `SET`, which would leak into other users of the pooled connection.
+- **`database/migrate.py` must never use the connection pool.** The pool registers the
+  pgvector type on every connection, which fails on a database where the extension does
+  not exist yet — so the migration that creates the extension could never run. Migrations
+  open their own plain `psycopg.AsyncConnection`, and `db_startup()` runs them *before*
+  opening the pool. `tests/test_migrate_isolation.py` guards both. This only breaks on a
+  genuinely fresh database, so an existing dev database will never reveal it.
 - **Schema changes go in a new `database/migrations/NNNN_*.sql`** — never edit
   `0001_initial.sql`, which is already applied everywhere. Each file runs in its own
   transaction and is recorded only on success. `AUTO_MIGRATE` defaults to false outside

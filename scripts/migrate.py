@@ -11,7 +11,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from database import db_shutdown, db_startup
 from database.migrate import applied, available, upgrade
 
 
@@ -46,12 +45,9 @@ async def main() -> int:
     sub.add_parser("status", help="列出已套用與待套用").set_defaults(fn=cmd_status)
     sub.add_parser("up", help="套用所有待執行的 migration").set_defaults(fn=cmd_up)
     args = ap.parse_args()
-
-    await db_startup()
-    try:
-        return await args.fn(args)
-    finally:
-        await db_shutdown()
+    # 刻意不開連線池:migration 走自己的連線,在 extension 還不存在的
+    # 全新資料庫上池子根本連不起來
+    return await args.fn(args)
 
 
 if __name__ == "__main__":
