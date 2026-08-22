@@ -12,10 +12,11 @@ OpenAI itself is a one-file change — no code edits.
 
 > **Status: usable end to end, with a UI and a retrieval benchmark.** Ingest, query,
 > multi-turn conversations, hybrid retrieval, and a chat interface at `GET /` are
-> implemented behind API-key authentication, verified by five smoke tests, and
-> measured by an evaluation harness with a 20-document / 36-question ground-truth
-> set. What's still missing: PDF/docx parsing, request timeouts, and schema
-> migrations. See the [Roadmap](#roadmap).
+> implemented behind API-key authentication, verified by 67 unit tests plus five
+> integration smoke suites, and measured by a retrieval benchmark with a
+> 20-document / 36-question ground-truth set. Text, Markdown, and PDF ingest are
+> supported. What's still missing: rate limiting, `.docx`, and OCR for scanned PDFs.
+> See the [Roadmap](#roadmap).
 
 ---
 
@@ -127,18 +128,22 @@ changing `.env` alone.
 │   ├── llm.py             # Chat model + shared OpenAI-compatible provider
 │   ├── embedding.py       # embed_query / embed_documents + dim validation
 │   ├── chunking.py        # Recursive character splitter
+│   ├── extract.py         # Text / Markdown / PDF → plain text
 │   ├── tools.py           # search_knowledge_base tool + RagDeps
 │   └── agent.py           # pydantic-ai Agent wired to the retrieval tool
 ├── database/
 │   ├── __init__.py        # db_startup() / db_shutdown()
 │   ├── conn.py            # pgvector-aware async connection pool
+│   ├── migrate.py         # Migration runner (advisory-locked, transactional)
+│   ├── migrations/        # Numbered SQL, the source of truth for schema
 │   ├── func.py            # Async, tenant-scoped document/chunk/search helpers
 │   └── sql/
-│       ├── schema.sql     # documents + chunks tables, HNSW index
-│       └── reset.sql      # drops tables (dev only)
+│       └── reset.sql      # drops every table (dev only)
 ├── eval/
 │   └── dataset.json       # 20 documents, 36 questions with ground truth
+├── tests/                 # pytest: pure-function unit tests, no DB or LLM needed
 ├── scripts/
+│   ├── migrate.py         # status / up
 │   ├── eval_retrieval.py  # recall@k / MRR, vector vs hybrid
 │   ├── manage_api_keys.py # create / list / revoke API keys
 │   ├── smoke_llm.py       # Verifies config → embedding → chat → tool calling
@@ -184,12 +189,13 @@ cp .env.example .env
 | `EMBEDDING_BASE_URL` |          | Falls back to `CHAT_BASE_URL` when empty                  |
 | `EMBEDDING_API_KEY`  |          | See the fallback rule below                               |
 | `EMBEDDING_MODEL`    |    ✅    | Embedding model name                                      |
-| `EMBEDDING_DIM`      |          | Default `1024`; must match `VECTOR(n)` in `schema.sql`    |
+| `EMBEDDING_DIM`      |          | Default `1024`; must match `VECTOR(n)` in the migrations  |
 | `RETRIEVAL_MODE`     |          | `hybrid` (default) or `vector` — see [Retrieval](#retrieval) |
 | `LLM_TIMEOUT_SECONDS`|          | Per-request timeout, default `120` (SDK default is 600)   |
 | `AGENT_REQUEST_LIMIT`|          | Model calls per `/chat` run, default `6`                  |
 | `AGENT_TOOL_CALLS_LIMIT` |      | Tool calls per `/chat` run, default `4`                   |
 | `AUTH_MODE`          |          | `api_key` (default) or `disabled` — see above              |
+| `AUTO_MIGRATE`       |          | Apply pending migrations at startup, default `false`      |
 | `DEFAULT_TENANT_ID`  |          | Only used when `AUTH_MODE=disabled`                        |
 | `DATABASE_URL`       |          | PostgreSQL DSN                                            |
 
@@ -225,6 +231,31 @@ EMBEDDING_DIM=1024
 > Most OpenAI-compatible clients append `/chat/completions` to the base URL, so it
 > generally **must end in `/v1`**. A bare host will 404. The smoke test warns about
 > this.
+
+### Schema migrations
+
+Schema lives in numbered SQL files under `database/migrations/`, tracked in a
+`schema_migrations` table:
+
+```bash
+python scripts/migrate.py status
+python scripts/migrate.py up
+```
+
+Each file runs in its own transaction and is only recorded on success, so a failed
+migration leaves neither half-applied SQL nor a false "applied" record. Concurrent
+instances are serialised with a Postgres advisory lock.
+
+`AUTO_MIGRATE=true` applies pending migrations during app startup — Compose sets this
+so `docker compose up` works out of the box. It defaults to **false** elsewhere,
+because in a real deployment migrations should be a deliberate, reviewable step rather
+than a side effect of a container restart. With it off, the server prints a warning at
+startup listing anything outstanding.
+
+> There's no Alembic here on purpose. This project is hand-written SQL with no ORM, so
+> Alembic's autogenerate and model-diffing — the reason to take that dependency — have
+> nothing to work with. Numbered SQL plus a version table is what `dbmate` and
+> `golang-migrate` do.
 
 ### `system.yaml`
 
@@ -303,6 +334,7 @@ to watch the same knowledge base become invisible.
 
 ```bash
 docker compose up -d db
+python scripts/migrate.py up
 python scripts/manage_api_keys.py create --tenant demo   # copy the key
 uvicorn server:app --reload
 open http://localhost:8000                               # paste the key in the sidebar
@@ -328,7 +360,7 @@ curl -X POST http://localhost:8000/documents \
 
 | Field        | Type | Default | Notes                                     |
 | ------------ | ---- | ------- | ----------------------------------------- |
-| `file`       | file | —       | `.txt`, `.md`, `.markdown`, `.text`; UTF-8; ≤ 2 MB |
+| `file`       | file | —       | `.txt`, `.md`, `.markdown`, `.text`, `.pdf`; ≤ 8 MB |
 | `title`      | form | filename | Display title                            |
 | `chunk_size` | form | `800`   | Characters per chunk                      |
 | `overlap`    | form | `100`   | Characters carried between chunks         |
@@ -344,8 +376,14 @@ curl -X POST http://localhost:8000/documents \
 it — `(tenant_id, source)` is unique, old chunks are deleted and rewritten, and
 `replaced` tells you which happened.
 
-Errors: `415` unsupported extension · `413` too large · `400` not valid UTF-8 or
-no chunkable content · `422` invalid `chunk_size`/`overlap`.
+PDFs are read with `pypdf` and must have a **text layer**. A scanned or image-only
+PDF is rejected with an explicit message rather than being silently ingested as an
+empty document — there is no OCR. A page that fails to parse is skipped and logged
+rather than failing the whole file.
+
+Errors: `415` unsupported extension · `413` too large · `400` unreadable file (bad
+UTF-8, corrupt PDF, password-protected PDF, no text layer, or nothing to chunk) ·
+`422` invalid `chunk_size`/`overlap`.
 
 > Embeddings are computed **before** anything is written, so a failure at the LLM
 > endpoint leaves no half-ingested document behind.
@@ -462,6 +500,14 @@ data: {}
 
 ## Verifying your setup
 
+Unit tests first — they cover the pure logic (chunking, key handling, file extraction,
+config fallbacks, history reconstruction) and need neither a database nor an LLM:
+
+```bash
+pytest
+# 67 passed in 1.57s
+```
+
 Before wiring anything else up, confirm the endpoint actually works:
 
 ```bash
@@ -543,8 +589,7 @@ docker compose up --build
 ```
 
 - The app listens on **http://localhost:8000**.
-- `database/sql/schema.sql` is mounted into the Postgres init directory and runs
-  automatically **on first start only** (an existing volume will not re-run it).
+- Migrations run automatically on app startup because Compose sets `AUTO_MIGRATE=true`.
 - Inside the compose network the app reaches the DB at
   `postgresql://postgres:secret@db:5432/enterprise_rag`.
 - `docker-compose.override.yaml` exposes the DB to the host on **port 5433**, not
@@ -559,12 +604,11 @@ docker compose up --build
 # 1. Create a virtualenv and install dependencies
 python3.13 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # or requirements.txt to skip pytest
 
-# 2. Start the database (or use your own Postgres with pgvector)
-docker compose up -d db          # exposed on localhost:5433, schema auto-applied
-# — or locally:
-# createdb enterprise_rag && psql enterprise_rag -f database/sql/schema.sql
+# 2. Start the database and apply migrations
+docker compose up -d db          # exposed on localhost:5433
+python scripts/migrate.py up
 
 # 3. Configure .env, verify the LLM endpoint, then run the server
 cp .env.example .env
@@ -575,15 +619,16 @@ uvicorn server:app --reload
 The server opens the connection pool on startup and closes it on shutdown via the
 FastAPI lifespan in [`server.py`](server.py).
 
-To reset the schema during development:
+To wipe everything during development:
 
 ```bash
-psql enterprise_rag -f database/sql/reset.sql   # drops tables — dev only
+psql "$DATABASE_URL" -f database/sql/reset.sql   # drops every table — dev only
+python scripts/migrate.py up                     # rebuild from migrations
 ```
 
 ## Database schema
 
-Defined in [`database/sql/schema.sql`](database/sql/schema.sql):
+Defined in [`database/migrations/`](database/migrations/):
 
 - **`documents`** — one row per source document: `tenant_id`, `title`, `source`,
   `metadata` JSONB, `created_at`, `updated_at`, with `UNIQUE (tenant_id, source)`
@@ -623,8 +668,11 @@ the search until the limit is met, and degrades gracefully on older pgvector.
 - [ ] A corpus large enough for the benchmark to discriminate above recall@1
 - [ ] Reranking (no cross-encoder available on the current endpoint)
 - [x] Request timeouts and per-run usage limits on `/chat`
-- [ ] PDF / docx parsing (currently plain text and Markdown only)
-- [ ] Schema migrations (`schema.sql` only runs on a fresh volume)
+- [x] PDF ingest with an explicit error for scanned / text-layer-less files
+- [x] Schema migrations with a version table and advisory locking
+- [x] Unit test suite (`pytest`) for the pure logic
+- [ ] `.docx` ingest, and OCR for scanned PDFs
+- [ ] Per-caller rate limiting
 
 ## Security notes
 

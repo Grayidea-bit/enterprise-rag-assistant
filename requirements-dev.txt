@@ -1,0 +1,3 @@
+# 開發與測試用。正式執行只需要 requirements.txt。
+-r requirements.txt
+pytest==9.1.1

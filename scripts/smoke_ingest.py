@@ -21,6 +21,7 @@ from database import db_shutdown, db_startup  # noqa: E402
 from database.conn import pool  # noqa: E402
 from database.func import search_chunks  # noqa: E402
 from scripts._smoke_auth import drop_keys, mint  # noqa: E402
+from tests.pdf_fixture import make_pdf  # noqa: E402
 from server import app  # noqa: E402
 
 LINE = "─" * 62
@@ -212,7 +213,7 @@ async def main() -> int:
             return f"無門檻回 {len(loose)} 筆(最近 {loose[0][1]:.4f}),加門檻後正確擋掉"
 
         async def t_rejects():
-            bad_ext = await upload(client, HA, "報表.pdf", "x")
+            bad_ext = await upload(client, HA, "報表.docx", "x")
             if bad_ext.status_code != 415:
                 raise RuntimeError(f"副檔名不符應回 415,實際 {bad_ext.status_code}")
             bad_utf8 = await client.post(
@@ -230,13 +231,40 @@ async def main() -> int:
                 raise RuntimeError(f"overlap 超界應回 422,實際 {bad_param.status_code}")
             return "415 / 400 / 400 / 422 皆正確擋下"
 
-        await check("上傳 A", "[1/7] 上傳文件（租戶 A）", t_upload)
-        await check("上傳 B", "[2/7] 上傳文件（租戶 B）", t_upload_b)
-        await check("重複上傳", "[3/7] 同名重傳走 upsert 而非長第二份", t_replace)
-        await check("列表隔離", "[4/7] GET /documents 的租戶隔離", t_list_isolation)
-        await check("檢索隔離", "[5/7] 向量檢索的租戶隔離", t_search_isolation)
-        await check("距離門檻", "[6/7] max_distance 擋掉不相關結果", t_distance_threshold)
-        await check("錯誤處理", "[7/7] 錯誤輸入的處理", t_rejects)
+        await check("上傳 A", "[1/8] 上傳文件（租戶 A）", t_upload)
+        await check("上傳 B", "[2/8] 上傳文件（租戶 B）", t_upload_b)
+        await check("重複上傳", "[3/8] 同名重傳走 upsert 而非長第二份", t_replace)
+        await check("列表隔離", "[4/8] GET /documents 的租戶隔離", t_list_isolation)
+        await check("檢索隔離", "[5/8] 向量檢索的租戶隔離", t_search_isolation)
+        await check("距離門檻", "[6/8] max_distance 擋掉不相關結果", t_distance_threshold)
+        async def t_pdf():
+            pdf = make_pdf([
+                "Procurement Policy",
+                "Purchases above NTD 300000 require three written quotes.",
+                "Acceptance must be completed within seven working days.",
+            ])
+            r = await client.post(
+                "/documents",
+                headers=HA,
+                files={"file": ("procurement.pdf", pdf, "application/pdf")},
+                data={"chunk_size": 200, "overlap": 40},
+            )
+            if r.status_code != 201:
+                raise RuntimeError(f"PDF 上傳失敗 HTTP {r.status_code}: {r.text[:200]}")
+            if r.json()["chunks"] < 1:
+                raise RuntimeError("PDF 沒有切出任何 chunk")
+            # 掃描檔(沒有文字層)必須被擋下並說清楚原因
+            scan = await client.post(
+                "/documents",
+                headers=HA,
+                files={"file": ("scan.pdf", make_pdf([], with_text=False), "application/pdf")},
+            )
+            if scan.status_code != 400 or "OCR" not in scan.json()["detail"]:
+                raise RuntimeError(f"掃描檔應回 400 並提及 OCR,實際 {scan.status_code}")
+            return f"PDF 抽出 {r.json()['chunks']} 個 chunk,掃描檔回 400 並說明不做 OCR"
+
+        await check("錯誤處理", "[7/8] 錯誤輸入的處理", t_rejects)
+        await check("PDF", "[8/8] PDF 抽取與掃描檔處理", t_pdf)
 
     await cleanup()
     await db_shutdown()

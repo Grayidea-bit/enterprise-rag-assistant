@@ -6,7 +6,6 @@ services:
       POSTGRES_PASSWORD: secret
     volumes:
       - pgdata:/var/lib/postgresql
-      - ./database/sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d enterprise_rag"]
       interval: 5s
@@ -34,6 +33,8 @@ services:
       AGENT_TOOL_CALLS_LIMIT: ${AGENT_TOOL_CALLS_LIMIT:-4}
       RETRIEVAL_MODE: ${RETRIEVAL_MODE:-hybrid}
       AUTH_MODE: ${AUTH_MODE:-api_key}
+      # 容器啟動時自動套用 migration,讓 `docker compose up` 開箱即用
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-true}
       DEFAULT_TENANT_ID: ${DEFAULT_TENANT_ID:-default}
     depends_on:
       db:

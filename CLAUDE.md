@@ -9,8 +9,8 @@ LLM endpoint** via pydantic-ai, for both chat and embeddings). **Usable end to
 end**: config, the LLM/embedding layer, chunking, the async DB layer, `tenant_id`
 isolation, ingest, query (`/search`, `/chat`, `/chat/stream`), multi-turn
 conversations, and a single-file chat UI at `GET /` are all implemented and verified
-by the four smoke scripts. **Still missing**: PDF/docx parsing, rate limiting,
-and schema migrations. See the
+by the four smoke scripts. **Still missing**: `.docx` ingest, OCR for
+scanned PDFs, and per-caller rate limiting. See the
 Roadmap in `README.md` before assuming an endpoint exists.
 
 Currently verified against a self-hosted Ollama (`qwen3.8:27b` chat, `bge-m3`
@@ -22,10 +22,13 @@ which vendor is behind the endpoint.
 ```bash
 # Local dev
 python3.13 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt          # requirements.txt + pytest
 cp .env.example .env                              # then fill it in
-python scripts/smoke_llm.py                       # verify the LLM endpoint first
+pytest                                            # fast; no DB or LLM needed
+python scripts/smoke_llm.py                       # verify the LLM endpoint
 docker compose up -d db                           # DB on localhost:5433 (not 5432)
+python scripts/migrate.py up                      # apply schema migrations
+python scripts/manage_api_keys.py create --tenant demo
 uvicorn server:app --reload                       # run on :8000
 
 # Verify the whole ingest pipeline against a real DB
@@ -41,8 +44,14 @@ docker compose up --build                         # reads ${...} from .env
 python scripts/smoke_llm.py --model qwen3:8b
 ```
 
-No test suite, linter, or formatter is configured yet. Three smoke scripts are the
-only automated verification; all exit non-zero on failure:
+No linter or formatter is configured yet. Verification comes in two layers.
+
+**`pytest`** covers the pure logic — chunking, key generation and header parsing, file
+extraction, config fallbacks, history reconstruction. No database, no LLM, ~1.5s. Run
+it on every change; there is no excuse for skipping it.
+
+**Smoke scripts** cover everything that needs real infrastructure; all exit non-zero
+on failure:
 
 | Script | Covers | Needs |
 | --- | --- | --- |
@@ -51,6 +60,9 @@ only automated verification; all exit non-zero on failure:
 | `scripts/smoke_chat.py` | search → cited answer → refusal → SSE → validation | + DB |
 | `scripts/smoke_conversation.py` | multi-turn history, isolation, cascade | + DB |
 | `scripts/smoke_auth.py` | key auth, revocation, tenant spoofing, hashing | + DB |
+
+`tests/pdf_fixture.py` hand-builds minimal PDFs so PDF tests need no reportlab; it is
+ASCII/Helvetica only, which is fine because the tests exercise extraction, not layout.
 
 `scripts/eval_retrieval.py` is a benchmark, not a test — it ingests `eval/dataset.json`
 into its own tenant and reports recall@k / MRR for each retrieval mode. Run it after
@@ -101,6 +113,10 @@ Module roles:
 - `index.html` — the whole UI: vanilla HTML/CSS/JS in one file, no build step. It
   parses SSE by hand from `fetch().body.getReader()` because `EventSource` is
   GET-only.
+- `core/extract.py` — `extract(filename, bytes)` dispatches on suffix to text or PDF.
+  Raises `ExtractionError` with a message intended to be shown to the caller.
+- `database/migrate.py` — migration runner; `database/migrations/*.sql` is the source
+  of truth for schema. There is no `schema.sql` any more.
 - `database/conn.py` — `psycopg_pool.AsyncConnectionPool` with
   `configure=register_vector_async`. Created with `open=False`.
 - `database/__init__.py` — `db_startup()` / `db_shutdown()` are **async**; awaited
@@ -240,9 +256,14 @@ Module roles:
   tenant_id = …` is applied, so a sparse tenant can get fewer than `k` rows.
   `hnsw.iterative_scan` (pgvector 0.8+) is set per-transaction via `SET LOCAL` —
   never plain `SET`, which would leak into other users of the pooled connection.
-- **`schema.sql` only runs on a fresh volume.** It is mounted into
-  `docker-entrypoint-initdb.d`, so schema changes need `docker compose down -v` (dev)
-  or a real migration (anything else). There is no migration tool yet.
+- **Schema changes go in a new `database/migrations/NNNN_*.sql`** — never edit
+  `0001_initial.sql`, which is already applied everywhere. Each file runs in its own
+  transaction and is recorded only on success. `AUTO_MIGRATE` defaults to false outside
+  Compose so migrations stay a deliberate step; the server warns at startup when any
+  are outstanding.
+- **A PDF with no text layer is rejected, not ingested empty.** Silently storing zero
+  chunks for a scanned document is the worst outcome — the user believes it worked and
+  the assistant later says it can't find anything. `MIN_PDF_CHARS` is the guard.
 - **The dev DB is on port 5433, not 5432**, set in `docker-compose.override.yaml` to
   avoid colliding with other local Postgres instances.
 - **Docker containers can't reach your `localhost`.** Use `host.docker.internal` or a
