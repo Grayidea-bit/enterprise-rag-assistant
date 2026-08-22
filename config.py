@@ -45,6 +45,19 @@ class EnvSettings(BaseSettings):
         description="Embedding 向量維度（需與 schema.sql 的 VECTOR(n) 一致）",
     )
 
+    # OpenAI SDK 預設 read timeout 是 600 秒,對一個 HTTP 端點來說太長了 ——
+    # 端點掛住十分鐘,呼叫端只會看到連線一直不回應。
+    LLM_TIMEOUT_SECONDS: float = Field(
+        default=120.0,
+        gt=0,
+        description="單次 LLM / embedding 請求的逾時秒數",
+    )
+
+    # agent 單次 run 的煞車。pydantic-ai 預設 request_limit=50、
+    # tool_calls_limit 無上限,失控的工具迴圈可以燒掉大量 token。
+    AGENT_REQUEST_LIMIT: int = Field(default=6, ge=1)
+    AGENT_TOOL_CALLS_LIMIT: int = Field(default=4, ge=1)
+
     # vector = 只用向量;hybrid = 向量 + trigram 詞彙,用 RRF 融合
     RETRIEVAL_MODE: Literal["vector", "hybrid"] = Field(
         default="hybrid",

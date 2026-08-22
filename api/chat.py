@@ -12,14 +12,18 @@ import json
 from collections.abc import AsyncIterator
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExceeded
 
 from api.conversations import require_conversation, to_history
 from api.deps import resolve_tenant
 from core.agent import get_agent
+from core.llm import get_usage_limits
 from core.embedding import embed_query
+from config import env_settings
 from core.tools import RagDeps, Retrieved
 from database.func import (
     append_message,
@@ -74,6 +78,25 @@ def _to_source(hit: Retrieved) -> Source:
 
 def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _as_http_error(e: Exception) -> HTTPException:
+    """把模型層的失敗翻成呼叫端看得懂的狀態碼。"""
+    if isinstance(e, UsageLimitExceeded):
+        # 不是使用者的錯,是我們的煞車踩下去了;429 最貼近「這次做太多了」
+        return HTTPException(
+            status_code=429, detail=f"單次問答超出用量上限:{e}"
+        )
+    if isinstance(e, httpx.TimeoutException):
+        return HTTPException(
+            status_code=504,
+            detail=f"LLM 端點在 {env_settings.LLM_TIMEOUT_SECONDS:.0f} 秒內沒有回應",
+        )
+    if isinstance(e, ModelHTTPError):
+        return HTTPException(status_code=502, detail=f"LLM 端點回報錯誤:{e}")
+    if isinstance(e, ModelAPIError):
+        return HTTPException(status_code=502, detail=f"無法連線到 LLM 端點:{e}")
+    raise e
 
 
 async def _prepare(tenant_id: str, body: ChatRequest):
@@ -138,9 +161,15 @@ async def chat(
     tenant_id: str = Depends(resolve_tenant),
 ) -> ChatResponse:
     conversation_id, history, deps = await _prepare(tenant_id, body)
-    result = await get_agent().run(
-        body.question, deps=deps, message_history=history or None
-    )
+    try:
+        result = await get_agent().run(
+            body.question,
+            deps=deps,
+            message_history=history or None,
+            usage_limits=get_usage_limits(),
+        )
+    except Exception as e:
+        raise _as_http_error(e) from e
     sources = [_to_source(h) for h in deps.unique_sources()]
     await _persist(tenant_id, conversation_id, body.question, result.output, sources)
     return ChatResponse(
@@ -166,7 +195,10 @@ async def chat_stream(
             yield _sse("conversation", {"conversation_id": conversation_id})
             chunks: list[str] = []
             async with get_agent().run_stream(
-                body.question, deps=deps, message_history=history or None
+                body.question,
+                deps=deps,
+                message_history=history or None,
+                usage_limits=get_usage_limits(),
             ) as result:
                 # 進到這裡時工具已經跑完了,所以來源可以先送出去給前端顯示
                 sources = [_to_source(h) for h in deps.unique_sources()]

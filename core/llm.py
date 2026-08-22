@@ -1,10 +1,12 @@
 from dataclasses import replace
 from functools import cache
 
+import httpx
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.profiles.openai import openai_model_profile
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.usage import UsageLimits
 
 from config import env_settings
 
@@ -14,8 +16,25 @@ def build_provider(base_url: str, api_key: str | None) -> OpenAIProvider:
 
     注意 api_key 必須是 None 而非空字串:OpenAIProvider 只在 api_key is None
     時才自動補上 'api-key-not-set',傳空字串會真的送出一把空金鑰。
+
+    自帶 http_client 是為了覆寫 OpenAI SDK 那個 600 秒的 read timeout。
+    連線逾時另外設短一點:端點打不通應該立刻失敗,而不是等兩分鐘。
     """
-    return OpenAIProvider(base_url=base_url, api_key=api_key or None)
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(env_settings.LLM_TIMEOUT_SECONDS, connect=10.0)
+    )
+    return OpenAIProvider(
+        base_url=base_url, api_key=api_key or None, http_client=http_client
+    )
+
+
+@cache
+def get_usage_limits() -> UsageLimits:
+    """單次 agent run 的煞車,避免工具迴圈失控。"""
+    return UsageLimits(
+        request_limit=env_settings.AGENT_REQUEST_LIMIT,
+        tool_calls_limit=env_settings.AGENT_TOOL_CALLS_LIMIT,
+    )
 
 
 def compat_profile(model_name: str) -> ModelProfile:

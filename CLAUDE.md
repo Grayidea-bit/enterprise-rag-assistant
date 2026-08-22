@@ -9,8 +9,8 @@ LLM endpoint** via pydantic-ai, for both chat and embeddings). **Usable end to
 end**: config, the LLM/embedding layer, chunking, the async DB layer, `tenant_id`
 isolation, ingest, query (`/search`, `/chat`, `/chat/stream`), multi-turn
 conversations, and a single-file chat UI at `GET /` are all implemented and verified
-by the four smoke scripts. **Still missing**: PDF/docx parsing, request
-timeouts, rate limiting, and schema migrations. See the
+by the four smoke scripts. **Still missing**: PDF/docx parsing, rate limiting,
+and schema migrations. See the
 Roadmap in `README.md` before assuming an endpoint exists.
 
 Currently verified against a self-hosted Ollama (`qwen3.8:27b` chat, `bge-m3`
@@ -161,6 +161,15 @@ Module roles:
   would pin the DB schema to a library version, and replaying old tool calls and
   retrieved chunks into context costs tokens for no benefit. `MAX_HISTORY_MESSAGES`
   caps the replay at 20 messages.
+- **Two library defaults here are actively dangerous and are overridden on purpose.**
+  The OpenAI SDK's read timeout is 600s (a caller would hang for ten minutes on a dead
+  endpoint) and pydantic-ai's `tool_calls_limit` is unlimited (a re-searching model can
+  loop until the budget is gone). `build_provider()` supplies its own `httpx` client
+  and `get_usage_limits()` supplies explicit caps — don't drop either.
+- **`_as_http_error()` in `api/chat.py` is the only place model failures become status
+  codes**: 429 for usage limits, 504 for timeouts, 502 for endpoint errors. It
+  re-raises anything it doesn't recognise rather than flattening it to a 500, so new
+  failure modes stay visible.
 - **The tenant comes from the key, never from a header.** Under `AUTH_MODE=api_key`,
   `X-Tenant-Id` is ignored completely. If a valid key could be paired with an arbitrary
   tenant header, the key would authenticate the caller without constraining them and

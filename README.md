@@ -186,6 +186,9 @@ cp .env.example .env
 | `EMBEDDING_MODEL`    |    ✅    | Embedding model name                                      |
 | `EMBEDDING_DIM`      |          | Default `1024`; must match `VECTOR(n)` in `schema.sql`    |
 | `RETRIEVAL_MODE`     |          | `hybrid` (default) or `vector` — see [Retrieval](#retrieval) |
+| `LLM_TIMEOUT_SECONDS`|          | Per-request timeout, default `120` (SDK default is 600)   |
+| `AGENT_REQUEST_LIMIT`|          | Model calls per `/chat` run, default `6`                  |
+| `AGENT_TOOL_CALLS_LIMIT` |      | Tool calls per `/chat` run, default `4`                   |
 | `AUTH_MODE`          |          | `api_key` (default) or `disabled` — see above              |
 | `DEFAULT_TENANT_ID`  |          | Only used when `AUTH_MODE=disabled`                        |
 | `DATABASE_URL`       |          | PostgreSQL DSN                                            |
@@ -423,6 +426,14 @@ curl -X POST http://localhost:8000/chat \
 }
 ```
 
+Every run is bounded: at most `AGENT_REQUEST_LIMIT` model calls and
+`AGENT_TOOL_CALLS_LIMIT` tool calls, and each HTTP call to the LLM endpoint times out
+after `LLM_TIMEOUT_SECONDS`. Without those, a model that keeps re-searching can loop
+until it exhausts your budget, and the OpenAI SDK's own 600-second default read
+timeout would leave a caller hanging for ten minutes. Exceeding the run budget returns
+**429**; a dead or slow endpoint returns **504**; an endpoint that answers with an
+error returns **502**.
+
 The agent decides when to call `search_knowledge_base`; `sources` reports the chunks
 it actually retrieved, deduplicated and sorted by distance. An empty `sources` array
 means the tool was never called — worth noticing, because it means the answer came
@@ -611,7 +622,7 @@ the search until the limit is met, and degrades gracefully on older pgvector.
 - [x] Hybrid retrieval: vector + trigram lexical, fused with RRF
 - [ ] A corpus large enough for the benchmark to discriminate above recall@1
 - [ ] Reranking (no cross-encoder available on the current endpoint)
-- [ ] Timeouts and `UsageLimits` on `/chat`
+- [x] Request timeouts and per-run usage limits on `/chat`
 - [ ] PDF / docx parsing (currently plain text and Markdown only)
 - [ ] Schema migrations (`schema.sql` only runs on a fresh volume)
 
@@ -627,6 +638,8 @@ the search until the limit is met, and degrades gracefully on older pgvector.
   tenant is derived from the key, never from a client-supplied header.
 - `AUTH_MODE=disabled` disables authentication entirely for local development. The
   server warns loudly at startup. Never enable it on a reachable host.
-- There is no rate limiting and no request timeout yet — both are tracked below.
+- LLM calls time out after `LLM_TIMEOUT_SECONDS` and each `/chat` run is capped by
+  `AGENT_REQUEST_LIMIT` / `AGENT_TOOL_CALLS_LIMIT`. There is still **no per-caller rate
+  limiting** — one key can issue unlimited requests. Tracked below.
 - Uploads are capped at 2 MB and restricted to UTF-8 text; nothing is executed or
   rendered from uploaded content.

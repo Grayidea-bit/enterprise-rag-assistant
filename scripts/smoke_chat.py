@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import httpx  # noqa: E402
 
 from config import env_settings  # noqa: E402
+from core.llm import get_usage_limits  # noqa: E402
 from database import db_shutdown, db_startup  # noqa: E402
 from database.conn import pool  # noqa: E402
 from scripts._smoke_auth import drop_keys, mint  # noqa: E402
@@ -205,12 +206,37 @@ async def main() -> int:
                     raise RuntimeError(f"{label} 應回 {expected},實際 {got}")
             return "空問題 / limit 越界 / 負距離 皆回 422"
 
-        await check("灌資料", "[1/6] 準備測試文件", t_setup)
-        await check("向量檢索", "[2/6] POST /search 純檢索", t_search)
-        await check("RAG 問答", "[3/6] POST /chat 帶引用回答", t_chat)
-        await check("空租戶拒答", "[4/6] 查無資料時不編造", t_no_data)
-        await check("SSE 串流", "[5/6] POST /chat/stream", t_stream)
-        await check("參數驗證", "[6/6] 錯誤參數", t_validation)
+        await check("灌資料", "[1/7] 準備測試文件", t_setup)
+        await check("向量檢索", "[2/7] POST /search 純檢索", t_search)
+        await check("RAG 問答", "[3/7] POST /chat 帶引用回答", t_chat)
+        await check("空租戶拒答", "[4/7] 查無資料時不編造", t_no_data)
+        await check("SSE 串流", "[5/7] POST /chat/stream", t_stream)
+        async def t_usage_limit():
+            """把煞車調到踩死,確認失控的 agent 迴圈會被擋下來並回 429。"""
+            original = env_settings.AGENT_REQUEST_LIMIT
+            env_settings.AGENT_REQUEST_LIMIT = 1  # 呼叫工具至少需要兩輪
+            get_usage_limits.cache_clear()
+            try:
+                r = await client.post(
+                    "/chat", headers=a, json={"question": "住宿費上限是多少?"}
+                )
+                if r.status_code != 429:
+                    raise RuntimeError(
+                        f"超出用量上限應回 429,實際 {r.status_code}:{r.text[:150]}"
+                    )
+                detail = r.json().get("detail", "")
+                if "用量" not in detail:
+                    raise RuntimeError(f"429 的訊息不夠清楚:{detail}")
+            finally:
+                env_settings.AGENT_REQUEST_LIMIT = original
+                get_usage_limits.cache_clear()
+            r = await client.post("/chat", headers=a, json={"question": "住宿費上限?"})
+            if r.status_code != 200:
+                raise RuntimeError(f"恢復上限後應該正常,實際 {r.status_code}")
+            return "request_limit=1 時回 429,恢復後正常"
+
+        await check("參數驗證", "[6/7] 錯誤參數", t_validation)
+        await check("用量煞車", "[7/7] UsageLimits 超限回 429", t_usage_limit)
 
     await cleanup()
     await db_shutdown()
