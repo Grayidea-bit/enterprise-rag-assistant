@@ -1,7 +1,5 @@
-# NVIDIA NIM（OpenAI 相容端點：https://integrate.api.nvidia.com/v1）
-llm_model_name: meta/llama-3.3-70b-instruct
-embedding_model_name: baai/bge-m3
-embedding_dim: 1024
+# 純應用層設定。連線資訊（端點 / 金鑰 / 模型名稱）一律放 .env,不放這裡。
 
 prompt: |
-  TESTING
+  你是一個企業知識庫助理。請根據檢索到的內容回答問題,
+  引用來源,並在資料不足時明確說「找不到相關資料」,不要臆測。
