@@ -22,7 +22,7 @@ which vendor is behind the endpoint.
 ```bash
 # Local dev
 python3.13 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt          # requirements.txt + pytest
 cp .env.example .env                              # then fill it in
 pytest                                            # fast; no DB or LLM needed
 python scripts/smoke_llm.py                       # verify the LLM endpoint

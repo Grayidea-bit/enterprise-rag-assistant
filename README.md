@@ -604,7 +604,7 @@ docker compose up --build
 # 1. Create a virtualenv and install dependencies
 python3.13 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # or requirements.txt to skip pytest
 
 # 2. Start the database and apply migrations
 docker compose up -d db          # exposed on localhost:5433
