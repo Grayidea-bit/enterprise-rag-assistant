@@ -8,8 +8,7 @@ from api.conversations import MAX_HISTORY_MESSAGES, to_history
 def rows(n: int) -> list[dict]:
     """交錯的 user / assistant 回合。"""
     return [
-        {"role": "user" if i % 2 == 0 else "assistant", "content": f"訊息{i}"}
-        for i in range(n)
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"訊息{i}"} for i in range(n)
     ]
 
 

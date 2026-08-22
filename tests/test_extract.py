@@ -9,14 +9,14 @@ from tests.pdf_fixture import make_pdf
 class TestText:
     @pytest.mark.parametrize("name", ["a.txt", "a.md", "a.markdown", "a.text", "A.MD"])
     def test_text_suffixes(self, name):
-        assert extract(name, "內容".encode("utf-8")) == "內容"
+        assert extract(name, "內容".encode()) == "內容"
 
     def test_non_utf8_is_rejected_with_a_readable_reason(self):
         with pytest.raises(ExtractionError, match="UTF-8"):
             extract("a.txt", b"\xff\xfe\x00binary")
 
     def test_utf8_bom_and_newlines_survive(self):
-        assert extract("a.md", "# 標題\n\n內文\n".encode("utf-8")) == "# 標題\n\n內文\n"
+        assert extract("a.md", "# 標題\n\n內文\n".encode()) == "# 標題\n\n內文\n"
 
 
 class TestPdf:
@@ -44,7 +44,7 @@ class TestPdf:
         assert len(text) >= MIN_PDF_CHARS
 
     def test_corrupt_pdf_is_rejected(self):
-        with pytest.raises(ExtractionError, match="損毀|格式"):
+        with pytest.raises(ExtractionError, match=r"損毀|格式"):
             extract("broken.pdf", b"%PDF-1.4\nnot really a pdf")
 
 
@@ -55,7 +55,7 @@ class TestDispatch:
             extract(name, b"x")
 
     def test_suffix_is_case_insensitive(self):
-        assert extract("A.TXT", "hi".encode()) == "hi"
+        assert extract("A.TXT", b"hi") == "hi"
 
     def test_error_names_the_offending_suffix(self):
         with pytest.raises(ExtractionError, match=r"\.docx"):

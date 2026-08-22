@@ -1,7 +1,7 @@
 """Schema migration CLI。
 
-    python scripts/migrate.py status
-    python scripts/migrate.py up
+python scripts/migrate.py status
+python scripts/migrate.py up
 """
 
 import argparse
@@ -11,8 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from database import db_shutdown, db_startup  # noqa: E402
-from database.migrate import applied, available, upgrade  # noqa: E402
+from database import db_shutdown, db_startup
+from database.migrate import applied, available, upgrade
 
 
 async def cmd_status(_args) -> int:

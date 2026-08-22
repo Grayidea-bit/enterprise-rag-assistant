@@ -61,10 +61,7 @@ async def search_knowledge_base(ctx: RunContext[RagDeps], query: str) -> str:
     if not rows:
         return "知識庫中找不到與這個問題相關的內容。"
 
-    hits = [
-        Retrieved(content=r[0], distance=float(r[1]), title=r[2], source=r[3])
-        for r in rows
-    ]
+    hits = [Retrieved(content=r[0], distance=float(r[1]), title=r[2], source=r[3]) for r in rows]
     ctx.deps.retrieved.extend(hits)
 
     blocks = []

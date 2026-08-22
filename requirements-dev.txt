@@ -1,3 +1,5 @@
 # 開發與測試用。正式執行只需要 requirements.txt。
 -r requirements.txt
 pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.16.4

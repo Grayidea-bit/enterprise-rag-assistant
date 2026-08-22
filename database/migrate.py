@@ -32,9 +32,7 @@ async def _ensure_table(conn) -> None:
 
 def available() -> list[tuple[str, Path]]:
     """回傳 [(版本, 檔案)],依檔名排序。版本就是檔名去掉副檔名。"""
-    return sorted(
-        (path.stem, path) for path in MIGRATIONS_DIR.glob("*.sql") if path.is_file()
-    )
+    return sorted((path.stem, path) for path in MIGRATIONS_DIR.glob("*.sql") if path.is_file())
 
 
 async def applied() -> set[str]:
@@ -56,9 +54,7 @@ async def upgrade() -> list[str]:
         await conn.execute("SELECT pg_advisory_lock(%s)", (ADVISORY_LOCK_ID,))
         try:
             await _ensure_table(conn)
-            rows = await (
-                await conn.execute("SELECT version FROM schema_migrations")
-            ).fetchall()
+            rows = await (await conn.execute("SELECT version FROM schema_migrations")).fetchall()
             done = {r[0] for r in rows}
 
             applied_now: list[str] = []

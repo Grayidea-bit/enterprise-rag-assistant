@@ -1,6 +1,7 @@
 """config.py 的設定解析與 fallback 規則。"""
 
 import pytest
+from pydantic import ValidationError
 
 from config import EnvSettings
 
@@ -9,6 +10,18 @@ BASE = {
     "CHAT_MODEL": "chat-model",
     "EMBEDDING_MODEL": "embed-model",
 }
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch):
+    """把 EnvSettings 會讀的環境變數全部清掉。
+
+    _env_file=None 只擋得住 .env 檔,行程環境變數照樣會被讀進來 ——
+    CI 上設了 CHAT_BASE_URL,「缺必填欄位」的測試就會通不過。
+    """
+    for name in EnvSettings.model_fields:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
 
 
 def settings(**overrides) -> EnvSettings:
@@ -20,7 +33,7 @@ class TestRequiredFields:
     @pytest.mark.parametrize("missing", ["CHAT_BASE_URL", "CHAT_MODEL", "EMBEDDING_MODEL"])
     def test_missing_required_field_raises(self, missing):
         kwargs = {k: v for k, v in BASE.items() if k != missing}
-        with pytest.raises(Exception, match=missing):
+        with pytest.raises(ValidationError, match=missing):
             EnvSettings(_env_file=None, **kwargs)
 
 
@@ -69,10 +82,10 @@ class TestDefaults:
 
     @pytest.mark.parametrize("bad", ["always", "none", ""])
     def test_invalid_auth_mode_rejected(self, bad):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             settings(AUTH_MODE=bad)
 
     @pytest.mark.parametrize("bad", [0, -5])
     def test_non_positive_timeout_rejected(self, bad):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             settings(LLM_TIMEOUT_SECONDS=bad)

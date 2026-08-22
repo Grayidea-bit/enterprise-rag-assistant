@@ -14,12 +14,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import httpx  # noqa: E402
+import httpx
 
-from database import db_shutdown, db_startup  # noqa: E402
-from database.conn import pool  # noqa: E402
-from scripts._smoke_auth import drop_keys, mint  # noqa: E402
-from server import app  # noqa: E402
+from database import db_shutdown, db_startup
+from database.conn import pool
+from scripts._smoke_auth import drop_keys, mint
+from server import app
 
 LINE = "─" * 62
 TENANT_A = "smoke-conv-a"
@@ -95,9 +95,7 @@ async def main() -> int:
             return f"灌入 {r.json()['chunks']} 個 chunk"
 
         async def t_first_turn():
-            r = await client.post(
-                "/chat", headers=a, json={"question": "特休有幾天?"}
-            )
+            r = await client.post("/chat", headers=a, json={"question": "特休有幾天?"})
             if r.status_code != 200:
                 raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
             body = r.json()
@@ -158,7 +156,9 @@ async def main() -> int:
         async def t_stream_persists():
             events = []
             async with client.stream(
-                "POST", "/chat/stream", headers=a,
+                "POST",
+                "/chat/stream",
+                headers=a,
                 json={"question": "病假上限幾天?", "conversation_id": state["conv"]},
             ) as r:
                 name = None

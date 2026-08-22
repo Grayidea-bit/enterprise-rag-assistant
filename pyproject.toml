@@ -1,0 +1,51 @@
+[project]
+name = "enterprise-rag-assistant"
+version = "0.1.0"
+description = "A retrieval-augmented generation backend for enterprise knowledge bases"
+requires-python = ">=3.13"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+exclude = [".venv", "database/migrations"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",     # 行長由 formatter 管,lint 不再重複抱怨
+    "RUF001",   # 全形標點在中文註解裡是正常的,不是「易混淆字元」
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 的相依注入本來就寫在參數預設值裡,不是 B008 想抓的可變預設值
+extend-immutable-calls = [
+    "fastapi.Depends", "fastapi.File", "fastapi.Form",
+    "fastapi.Header", "fastapi.Query", "fastapi.Body",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 測試腳本需要在 sys.path 調整之後才 import 專案模組
+"scripts/*.py" = ["E402"]
+"tests/*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+asyncio_mode = "auto"
+# 整個 session 共用一個 event loop:連線池是模組層級的單例,
+# 每個測試換一個 loop 會讓池裡的連線綁到已關閉的 loop 上
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+markers = [
+    "integration: 需要可連線的 PostgreSQL(CI 用 service container 提供)",
+]

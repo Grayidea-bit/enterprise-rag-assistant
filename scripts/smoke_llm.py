@@ -25,9 +25,9 @@ args = parser.parse_args()
 if args.model:
     os.environ["CHAT_MODEL"] = args.model
 
-from config import env_settings  # noqa: E402
-from core.embedding import embed_documents, embed_query  # noqa: E402
-from core.llm import get_model  # noqa: E402
+from config import env_settings
+from core.embedding import embed_documents, embed_query
+from core.llm import get_model
 
 LINE = "─" * 62
 results: list[tuple[str, bool, str]] = []
@@ -63,7 +63,9 @@ async def check_config() -> None:
         print(f"  chat       {chat_url}")
         print(f"             model={env_settings.CHAT_MODEL}  key={mask(chat_key)}")
         print(f"  embedding  {emb_url} {shared}")
-        print(f"             model={env_settings.EMBEDDING_MODEL}  key={mask(emb_key)}  dim={env_settings.EMBEDDING_DIM}")
+        print(
+            f"             model={env_settings.EMBEDDING_MODEL}  key={mask(emb_key)}  dim={env_settings.EMBEDDING_DIM}"
+        )
         if not chat_url.rstrip("/").endswith("/v1"):
             print("  \033[33m!\033[0m base_url 未以 /v1 結尾,多數 OpenAI 相容端點會 404")
         ok("設定可解析", time.perf_counter() - t, "設定")
@@ -119,9 +121,7 @@ async def check_tool_calling() -> None:
         )
         result = await agent.run("TSLA 現在多少錢?")
         if not called["hit"]:
-            raise RuntimeError(
-                f"模型沒有呼叫工具,直接回答了:{(result.output or '')[:80]}"
-            )
+            raise RuntimeError(f"模型沒有呼叫工具,直接回答了:{(result.output or '')[:80]}")
         ok("工具確實被呼叫", time.perf_counter() - t, "Tool calling")
     except Exception as e:
         fail(e, time.perf_counter() - t, "Tool calling")

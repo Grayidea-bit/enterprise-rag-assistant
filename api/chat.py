@@ -20,10 +20,10 @@ from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExce
 
 from api.conversations import require_conversation, to_history
 from api.deps import resolve_tenant
-from core.agent import get_agent
-from core.llm import get_usage_limits
-from core.embedding import embed_query
 from config import env_settings
+from core.agent import get_agent
+from core.embedding import embed_query
+from core.llm import get_usage_limits
 from core.tools import RagDeps, Retrieved
 from database.func import (
     append_message,
@@ -71,9 +71,7 @@ def _to_source(hit: Retrieved) -> Source:
     excerpt = hit.content[:EXCERPT_CHARS]
     if len(hit.content) > EXCERPT_CHARS:
         excerpt += "…"
-    return Source(
-        source=hit.source, title=hit.title, distance=hit.distance, excerpt=excerpt
-    )
+    return Source(source=hit.source, title=hit.title, distance=hit.distance, excerpt=excerpt)
 
 
 def _sse(event: str, payload: dict) -> str:
@@ -84,9 +82,7 @@ def _as_http_error(e: Exception) -> HTTPException:
     """把模型層的失敗翻成呼叫端看得懂的狀態碼。"""
     if isinstance(e, UsageLimitExceeded):
         # 不是使用者的錯,是我們的煞車踩下去了;429 最貼近「這次做太多了」
-        return HTTPException(
-            status_code=429, detail=f"單次問答超出用量上限:{e}"
-        )
+        return HTTPException(status_code=429, detail=f"單次問答超出用量上限:{e}")
     if isinstance(e, httpx.TimeoutException):
         return HTTPException(
             status_code=504,
@@ -109,9 +105,7 @@ async def _prepare(tenant_id: str, body: ChatRequest):
         await require_conversation(tenant_id, conversation_id)
         history = to_history(await list_messages(tenant_id, conversation_id))
 
-    deps = RagDeps(
-        tenant_id=tenant_id, limit=body.limit, max_distance=body.max_distance
-    )
+    deps = RagDeps(tenant_id=tenant_id, limit=body.limit, max_distance=body.max_distance)
     return conversation_id, history, deps
 
 
@@ -172,9 +166,7 @@ async def chat(
         raise _as_http_error(e) from e
     sources = [_to_source(h) for h in deps.unique_sources()]
     await _persist(tenant_id, conversation_id, body.question, result.output, sources)
-    return ChatResponse(
-        answer=result.output, sources=sources, conversation_id=conversation_id
-    )
+    return ChatResponse(answer=result.output, sources=sources, conversation_id=conversation_id)
 
 
 @router.post("/chat/stream")
@@ -202,17 +194,13 @@ async def chat_stream(
             ) as result:
                 # 進到這裡時工具已經跑完了,所以來源可以先送出去給前端顯示
                 sources = [_to_source(h) for h in deps.unique_sources()]
-                yield _sse(
-                    "sources", {"sources": [s.model_dump() for s in sources]}
-                )
+                yield _sse("sources", {"sources": [s.model_dump() for s in sources]})
                 async for delta in result.stream_text(delta=True):
                     chunks.append(delta)
                     yield _sse("delta", {"text": delta})
-            await _persist(
-                tenant_id, conversation_id, body.question, "".join(chunks), sources
-            )
+            await _persist(tenant_id, conversation_id, body.question, "".join(chunks), sources)
             yield _sse("done", {})
-        except Exception as e:  # noqa: BLE001 - 串流已開始,只能用事件回報
+        except Exception as e:
             yield _sse("error", {"type": type(e).__name__, "detail": str(e)[:500]})
 
     return StreamingResponse(

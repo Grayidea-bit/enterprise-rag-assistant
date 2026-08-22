@@ -14,14 +14,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import httpx  # noqa: E402
+import httpx
 
-from config import env_settings  # noqa: E402
-from core.llm import get_usage_limits  # noqa: E402
-from database import db_shutdown, db_startup  # noqa: E402
-from database.conn import pool  # noqa: E402
-from scripts._smoke_auth import drop_keys, mint  # noqa: E402
-from server import app  # noqa: E402
+from config import env_settings
+from core.llm import get_usage_limits
+from database import db_shutdown, db_startup
+from database.conn import pool
+from scripts._smoke_auth import drop_keys, mint
+from server import app
 
 LINE = "─" * 62
 TENANT_A = "smoke-chat-a"
@@ -179,9 +179,7 @@ async def main() -> int:
             if "error" in kinds:
                 raise RuntimeError(f"串流回報錯誤: {dict(events)['error']}")
             if kinds[:2] != ["conversation", "sources"]:
-                raise RuntimeError(
-                    f"事件應以 conversation、sources 開頭,實際 {kinds[:3]}"
-                )
+                raise RuntimeError(f"事件應以 conversation、sources 開頭,實際 {kinds[:3]}")
             if kinds[-1] != "done":
                 raise RuntimeError(f"最後一個事件應該是 done,實際 {kinds[-3:]}")
             deltas = [p["text"] for n, p in events if n == "delta"]
@@ -211,19 +209,16 @@ async def main() -> int:
         await check("RAG 問答", "[3/7] POST /chat 帶引用回答", t_chat)
         await check("空租戶拒答", "[4/7] 查無資料時不編造", t_no_data)
         await check("SSE 串流", "[5/7] POST /chat/stream", t_stream)
+
         async def t_usage_limit():
             """把煞車調到踩死,確認失控的 agent 迴圈會被擋下來並回 429。"""
             original = env_settings.AGENT_REQUEST_LIMIT
             env_settings.AGENT_REQUEST_LIMIT = 1  # 呼叫工具至少需要兩輪
             get_usage_limits.cache_clear()
             try:
-                r = await client.post(
-                    "/chat", headers=a, json={"question": "住宿費上限是多少?"}
-                )
+                r = await client.post("/chat", headers=a, json={"question": "住宿費上限是多少?"})
                 if r.status_code != 429:
-                    raise RuntimeError(
-                        f"超出用量上限應回 429,實際 {r.status_code}:{r.text[:150]}"
-                    )
+                    raise RuntimeError(f"超出用量上限應回 429,實際 {r.status_code}:{r.text[:150]}")
                 detail = r.json().get("detail", "")
                 if "用量" not in detail:
                     raise RuntimeError(f"429 的訊息不夠清楚:{detail}")

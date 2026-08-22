@@ -20,12 +20,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import env_settings  # noqa: E402
-from core.chunking import split_text  # noqa: E402
-from core.embedding import embed_documents, embed_query  # noqa: E402
-from database import db_shutdown, db_startup  # noqa: E402
-from database.conn import pool  # noqa: E402
-from database.func import (  # noqa: E402
+from config import env_settings
+from core.chunking import split_text
+from core.embedding import embed_documents, embed_query
+from database import db_shutdown, db_startup
+from database.conn import pool
+from database.func import (
     delete_chunks,
     insert_chunks,
     retrieve,
@@ -42,9 +42,7 @@ async def ingest(documents: list[dict], chunk_size: int, overlap: int) -> int:
     for doc in documents:
         contents = split_text(doc["content"], chunk_size=chunk_size, overlap=overlap)
         embeddings = await embed_documents(contents)
-        document_id, existed = await upsert_document(
-            TENANT, doc["title"], doc["source"], None
-        )
+        document_id, existed = await upsert_document(TENANT, doc["title"], doc["source"], None)
         if existed:
             await delete_chunks(TENANT, document_id)
         total += await insert_chunks(TENANT, document_id, contents, embeddings)
@@ -81,7 +79,7 @@ async def run_mode(mode: str, questions: list[dict], ks: list[int]) -> dict:
         return sum(1 / r for r in subset if r is not None) / len(subset)
 
     by_kind: dict[str, list[int | None]] = {}
-    for q, r in zip(questions, ranks):
+    for q, r in zip(questions, ranks, strict=True):
         by_kind.setdefault(q["kind"], []).append(r)
 
     return {
@@ -92,7 +90,7 @@ async def run_mode(mode: str, questions: list[dict], ks: list[int]) -> dict:
             kind: {"recall": recall_at(max(ks), rs), "mrr": mrr(rs), "n": len(rs)}
             for kind, rs in by_kind.items()
         },
-        "misses": [q["q"] for q, r in zip(questions, ranks) if r is None],
+        "misses": [q["q"] for q, r in zip(questions, ranks, strict=True) if r is None],
         "ranks": ranks,
     }
 
@@ -128,7 +126,7 @@ async def main() -> int:
         print(" 完成")
 
     # ── 總表 ──
-    head = f"{'模式':<10}" + "".join(f"{'recall@'+str(k):>11}" for k in ks)
+    head = f"{'模式':<10}" + "".join(f"{'recall@' + str(k):>11}" for k in ks)
     head += f"{'MRR':>9}{'ms/題':>9}"
     print(f"\n{LINE}\n{head}\n{'-' * 72}")
     for mode in modes:
@@ -153,9 +151,11 @@ async def main() -> int:
         a, b = modes
         print(f"\n{LINE}")
         for k in ks:
-            d = results[b]['recall'][k] - results[a]['recall'][k]
+            d = results[b]["recall"][k] - results[a]["recall"][k]
             sign = "+" if d >= 0 else ""
-            print(f" recall@{k}: {a} {results[a]['recall'][k]:.1%} → {b} {results[b]['recall'][k]:.1%}  ({sign}{d:.1%})")
+            print(
+                f" recall@{k}: {a} {results[a]['recall'][k]:.1%} → {b} {results[b]['recall'][k]:.1%}  ({sign}{d:.1%})"
+            )
         moved = [
             (q["q"], results[a]["ranks"][i], results[b]["ranks"][i])
             for i, q in enumerate(questions)
@@ -163,8 +163,11 @@ async def main() -> int:
         ]
         if moved:
             print(f"\n 名次有變動的題目({len(moved)} 題):")
+
+            def fmt(rank: int | None) -> str:
+                return "未命中" if rank is None else f"#{rank}"
+
             for q, ra, rb in moved[:12]:
-                fmt = lambda r: "未命中" if r is None else f"#{r}"
                 print(f"   {fmt(ra):>6} → {fmt(rb):<6}  {q}")
 
     for mode in modes:

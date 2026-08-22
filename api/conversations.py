@@ -18,6 +18,7 @@ from database.func import (
     conversation_exists,
     create_conversation,
     delete_conversation,
+    get_conversation,
     list_conversations,
     list_messages,
 )
@@ -74,11 +75,13 @@ async def new_conversation(
     body: CreateConversation | None = None,
     tenant_id: str = Depends(resolve_tenant),
 ) -> ConversationSummary:
-    conversation_id = await create_conversation(
-        tenant_id, body.title if body else None
-    )
-    rows = await list_conversations(tenant_id, limit=1)
-    return ConversationSummary(**rows[0])
+    conversation_id = await create_conversation(tenant_id, body.title if body else None)
+    # 一定要用剛拿到的 id 讀回來。之前是取「這個租戶最新的一筆」,
+    # 兩個請求同時進來時會回到對方建立的對話。
+    row = await get_conversation(tenant_id, conversation_id)
+    if row is None:
+        raise HTTPException(status_code=500, detail="對話建立後卻讀不回來")
+    return ConversationSummary(**row)
 
 
 @router.get("", response_model=list[ConversationSummary])

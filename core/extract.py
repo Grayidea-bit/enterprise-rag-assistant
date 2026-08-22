@@ -47,7 +47,7 @@ def _extract_pdf(raw: bytes) -> str:
     for i, page in enumerate(reader.pages, start=1):
         try:
             pages.append(page.extract_text() or "")
-        except Exception as e:  # noqa: BLE001 - 單頁壞掉不該讓整份失敗
+        except Exception as e:
             pages.append("")
             print(f"PDF 第 {i} 頁抽取失敗,已跳過:{type(e).__name__}: {e}")
 
@@ -68,6 +68,5 @@ def extract(filename: str, raw: bytes) -> str:
     if suffix in PDF_SUFFIXES:
         return _extract_pdf(raw)
     raise ExtractionError(
-        f"目前只支援 {sorted(SUPPORTED_SUFFIXES)},收到的是 "
-        f"'{suffix or '(無副檔名)'}'"
+        f"目前只支援 {sorted(SUPPORTED_SUFFIXES)},收到的是 '{suffix or '(無副檔名)'}'"
     )

@@ -12,8 +12,8 @@ from pydantic import BaseModel
 
 from api.deps import resolve_tenant
 from core.chunking import DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP, split_text
-from core.extract import SUPPORTED_SUFFIXES, ExtractionError, extract
 from core.embedding import embed_documents
+from core.extract import SUPPORTED_SUFFIXES, ExtractionError, extract
 from database.func import (
     delete_chunks,
     insert_chunks,

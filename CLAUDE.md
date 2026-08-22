@@ -44,14 +44,18 @@ docker compose up --build                         # reads ${...} from .env
 python scripts/smoke_llm.py --model qwen3:8b
 ```
 
-No linter or formatter is configured yet. Verification comes in two layers.
+`ruff check .` and `ruff format .` are the linter and formatter; CI enforces both.
+Verification comes in two layers.
 
-**`pytest`** covers the pure logic — chunking, key generation and header parsing, file
-extraction, config fallbacks, history reconstruction. No database, no LLM, ~1.5s. Run
-it on every change; there is no excuse for skipping it.
+**`pytest`** — 111 tests, ~2s, no external services. Unit tests cover pure logic;
+integration tests (`tests/integration/`) drive the real FastAPI app against a real
+PostgreSQL with the models replaced by `TestModel` / `TestEmbeddingModel`. They skip
+cleanly when no database is reachable. **This is what CI runs**, so a change that
+breaks it will be caught; run it on every change.
 
-**Smoke scripts** cover everything that needs real infrastructure; all exit non-zero
-on failure:
+**Smoke scripts** need a live LLM endpoint, so CI cannot run them. They exist to check
+what stubs cannot: answer quality, citation, refusal behaviour. Run them after touching
+prompts, models, or retrieval behaviour.
 
 | Script | Covers | Needs |
 | --- | --- | --- |
@@ -63,6 +67,15 @@ on failure:
 
 `tests/pdf_fixture.py` hand-builds minimal PDFs so PDF tests need no reportlab; it is
 ASCII/Helvetica only, which is fine because the tests exercise extraction, not layout.
+
+Two things about the test setup that will bite if changed carelessly:
+- **`asyncio_default_*_loop_scope = "session"`** in `pyproject.toml` is load-bearing.
+  The connection pool is a module-level singleton; a per-test event loop would leave
+  its connections bound to a dead loop.
+- **`tests/test_config.py` clears the environment itself.** `_env_file=None` only
+  suppresses `.env`, not process environment variables — without the `clean_env`
+  fixture the "missing required field" tests pass locally and fail in CI, where those
+  variables are set.
 
 `scripts/eval_retrieval.py` is a benchmark, not a test — it ingests `eval/dataset.json`
 into its own tenant and reports recall@k / MRR for each retrieval mode. Run it after

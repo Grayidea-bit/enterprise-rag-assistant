@@ -1,5 +1,7 @@
 # Enterprise RAG Assistant
 
+[![CI](https://github.com/Grayidea-bit/enterprise-rag-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/Grayidea-bit/enterprise-rag-assistant/actions/workflows/ci.yml)
+
 A retrieval-augmented generation (RAG) backend for enterprise knowledge bases,
 built on **FastAPI**, **PostgreSQL + pgvector**, and **any OpenAI-compatible LLM
 endpoint** (via [pydantic-ai](https://ai.pydantic.dev/)) for both chat and
@@ -12,8 +14,8 @@ OpenAI itself is a one-file change — no code edits.
 
 > **Status: usable end to end, with a UI and a retrieval benchmark.** Ingest, query,
 > multi-turn conversations, hybrid retrieval, and a chat interface at `GET /` are
-> implemented behind API-key authentication, verified by 67 unit tests plus five
-> integration smoke suites, and measured by a retrieval benchmark with a
+> implemented behind API-key authentication, covered by **111 tests that run in CI
+> without any external services**, and measured by a retrieval benchmark with a
 > 20-document / 36-question ground-truth set. Text, Markdown, and PDF ingest are
 > supported. What's still missing: rate limiting, `.docx`, and OCR for scanned PDFs.
 > See the [Roadmap](#roadmap).
@@ -141,7 +143,8 @@ changing `.env` alone.
 │       └── reset.sql      # drops every table (dev only)
 ├── eval/
 │   └── dataset.json       # 20 documents, 36 questions with ground truth
-├── tests/                 # pytest: pure-function unit tests, no DB or LLM needed
+├── .github/workflows/     # CI: ruff + the full pytest suite on every push
+├── tests/                 # pytest — unit (no I/O) and integration (DB + stubbed models)
 ├── scripts/
 │   ├── migrate.py         # status / up
 │   ├── eval_retrieval.py  # recall@k / MRR, vector vs hybrid
@@ -500,13 +503,46 @@ data: {}
 
 ## Verifying your setup
 
-Unit tests first — they cover the pure logic (chunking, key handling, file extraction,
-config fallbacks, history reconstruction) and need neither a database nor an LLM:
+### Tests
 
 ```bash
-pytest
-# 67 passed in 1.57s
+pytest        # 111 passed in ~2s
 ```
+
+Two layers, both hermetic:
+
+- **Unit** (67) — pure logic: chunking, key generation and header parsing, file
+  extraction, config fallbacks, history reconstruction. No I/O at all.
+- **Integration** (44) — the real FastAPI app over a real PostgreSQL, but with the
+  chat and embedding models replaced by pydantic-ai's `TestModel` and
+  `TestEmbeddingModel`. Covers auth, tenant isolation, ingest and upsert, PDF
+  extraction, search modes, conversation persistence, cascade deletes, SSE event
+  ordering, and migration idempotency. **No LLM endpoint is contacted.**
+
+Without a reachable database the integration layer skips cleanly rather than failing,
+so `pytest` is always runnable:
+
+```
+67 passed, 44 skipped in 1.23s
+```
+
+> What integration tests deliberately do **not** check is answer quality.
+> `TestEmbeddingModel` returns the same all-ones vector for every input, so every
+> chunk sits at distance 0 and ranking is meaningless. Retrieval quality lives in
+> `scripts/eval_retrieval.py`; answer quality, citation and refusal behaviour live in
+> the smoke scripts below, which need a real endpoint.
+
+### Lint
+
+```bash
+ruff check .
+ruff format --check .
+```
+
+### Smoke tests against a real endpoint
+
+These are the ones that need a live LLM, so CI cannot run them. Run them after
+changing prompts, models, or anything about retrieval behaviour.
 
 Before wiring anything else up, confirm the endpoint actually works:
 
@@ -527,7 +563,7 @@ To try a smaller/faster model without editing `.env`:
 python scripts/smoke_llm.py --model qwen3:8b
 ```
 
-Then verify authentication:
+Verify authentication:
 
 ```bash
 python scripts/smoke_auth.py
@@ -604,7 +640,7 @@ docker compose up --build
 # 1. Create a virtualenv and install dependencies
 python3.13 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-dev.txt   # or requirements.txt to skip pytest
+pip install -r requirements-dev.txt   # or requirements.txt for runtime only
 
 # 2. Start the database and apply migrations
 docker compose up -d db          # exposed on localhost:5433
@@ -672,6 +708,7 @@ the search until the limit is met, and degrades gracefully on older pgvector.
 - [x] Schema migrations with a version table and advisory locking
 - [x] Unit test suite (`pytest`) for the pure logic
 - [ ] `.docx` ingest, and OCR for scanned PDFs
+- [x] CI on every push: ruff, and the full test suite against a Postgres service
 - [ ] Per-caller rate limiting
 
 ## Security notes
