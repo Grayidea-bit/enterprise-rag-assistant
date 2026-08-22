@@ -1,8 +1,313 @@
-<html>
-    <head>
-        <title>Enterprise Rag System</title>
-    </head>
-    <body>
-        <h1>Hello World!</h1>
-    </body>
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enterprise RAG Assistant</title>
+<style>
+:root {
+  --bg: #fbfaf8;  --panel: #ffffff;  --ink: #1c1b19;  --muted: #6f6b64;
+  --line: #e5e1da;  --accent: #b4552d;  --accent-soft: #f6ece6;
+  --user-bg: #efece6;  --code: #f3f0ea;
+  --radius: 10px;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171614;  --panel: #201e1b;  --ink: #ece8e1;  --muted: #9a938a;
+    --line: #322e2a;  --accent: #e0885c;  --accent-soft: #2c231d;
+    --user-bg: #2a2724;  --code: #14130f;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; height: 100vh; display: flex; background: var(--bg); color: var(--ink);
+  font: 15px/1.6 system-ui, -apple-system, "Noto Sans TC", sans-serif;
+}
+button { font: inherit; cursor: pointer; border-radius: 7px; border: 1px solid var(--line);
+         background: var(--panel); color: var(--ink); padding: 6px 11px; }
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+input, textarea { font: inherit; color: var(--ink); background: var(--panel);
+                  border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; }
+input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
+/* ── 側欄 ── */
+aside {
+  width: 290px; flex: none; border-right: 1px solid var(--line); background: var(--panel);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.brand { padding: 18px 18px 12px; border-bottom: 1px solid var(--line); }
+.brand h1 { margin: 0; font-size: 15px; letter-spacing: .2px; }
+.brand p { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
+.tenant { padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.tenant label { display: block; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+                color: var(--muted); margin-bottom: 5px; }
+.tenant input { width: 100%; font-family: var(--mono); font-size: 13px; }
+.tenant small { display: block; margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.5; }
+.section { padding: 14px 18px; border-bottom: 1px solid var(--line); min-height: 0; }
+.section.grow { flex: 1; overflow-y: auto; border-bottom: none; }
+.section h2 { margin: 0 0 9px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+              color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+.row { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: 7px;
+       cursor: pointer; font-size: 13.5px; }
+.row:hover { background: var(--accent-soft); }
+.row.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+.row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .del { opacity: 0; border: none; background: none; padding: 0 4px; color: var(--muted); }
+.row:hover .del { opacity: 1; }
+.row .del:hover { color: var(--accent); }
+.doc { font-size: 13px; padding: 6px 9px; border-radius: 7px; display: flex; gap: 8px; }
+.doc span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc em { font-style: normal; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.empty { color: var(--muted); font-size: 12.5px; padding: 4px 9px; }
+
+/* ── 主區 ── */
+main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#log { flex: 1; overflow-y: auto; padding: 28px 0; }
+.wrap { max-width: 740px; margin: 0 auto; padding: 0 28px; }
+.msg { margin-bottom: 22px; }
+.msg .who { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+            color: var(--muted); margin-bottom: 6px; }
+.msg .body { white-space: pre-wrap; word-wrap: break-word; }
+.msg.user .body { background: var(--user-bg); padding: 11px 14px; border-radius: var(--radius); }
+.msg .body code { background: var(--code); padding: 1px 5px; border-radius: 4px;
+                  font-family: var(--mono); font-size: .9em; }
+.cite { color: var(--accent); font-weight: 600; }
+.sources { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.src { border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; font-size: 12.5px; }
+.src summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; list-style: none; }
+.src summary::-webkit-details-marker { display: none; }
+.src .n { color: var(--accent); font-weight: 600; font-family: var(--mono); }
+.src .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src .d { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.src p { margin: 8px 0 0; color: var(--muted); white-space: pre-wrap; line-height: 1.55; }
+.hint { color: var(--muted); font-size: 13px; }
+.err { color: #c0392b; font-size: 13px; border: 1px solid currentColor; border-radius: 8px;
+       padding: 9px 12px; }
+.dots::after { content: "▍"; animation: blink 1s steps(2) infinite; color: var(--accent); }
+@keyframes blink { 50% { opacity: 0; } }
+
+footer { border-top: 1px solid var(--line); background: var(--panel); padding: 14px 0; }
+.composer { display: flex; gap: 9px; align-items: flex-end; }
+.composer textarea { flex: 1; resize: none; max-height: 160px; }
+.welcome { text-align: center; color: var(--muted); padding: 60px 20px; }
+.welcome h3 { color: var(--ink); font-size: 17px; margin: 0 0 8px; font-weight: 500; }
+.welcome p { margin: 0 0 4px; font-size: 13.5px; }
+</style>
+</head>
+<body>
+<aside>
+  <div class="brand">
+    <h1>Enterprise RAG Assistant</h1>
+    <p>pgvector · OpenAI 相容端點</p>
+  </div>
+
+  <div class="tenant">
+    <label for="tenant">租戶 (X-Tenant-Id)</label>
+    <input id="tenant" value="demo" spellcheck="false">
+    <small>改成別的值就看不到這個租戶的文件與對話 —— 隔離發生在資料層。注意目前沒有身分驗證。</small>
+  </div>
+
+  <div class="section">
+    <h2>知識庫 <button id="pick">上傳</button></h2>
+    <div id="docs"></div>
+    <input type="file" id="file" accept=".txt,.md,.markdown,.text" hidden>
+  </div>
+
+  <div class="section grow">
+    <h2>對話 <button id="new">新對話</button></h2>
+    <div id="convs"></div>
+  </div>
+</aside>
+
+<main>
+  <div id="log"><div class="wrap" id="msgs"></div></div>
+  <footer><div class="wrap composer">
+    <textarea id="q" rows="1" placeholder="針對知識庫提問…（Enter 送出，Shift+Enter 換行）"></textarea>
+    <button id="send">送出</button>
+  </div></footer>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = { conv: null, busy: false };
+const tenant = () => $('tenant').value.trim() || 'default';
+const headers = (extra = {}) => ({ 'X-Tenant-Id': tenant(), ...extra });
+
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// 只做最低限度的呈現:標註引用、粗體、行內程式碼。刻意不引入 markdown 函式庫。
+const render = s => esc(s)
+  .replace(/\[(\d+)\]/g, '<span class="cite">[$1]</span>')
+  .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  .replace(/`([^`]+)`/g, '<code>$1</code>');
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: headers(opts.headers) });
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return r.status === 204 ? null : r.json();
+}
+
+/* ── 側欄 ── */
+async function loadDocs() {
+  try {
+    const docs = await api('/documents');
+    $('docs').innerHTML = docs.length
+      ? docs.map(d => `<div class="doc"><span>${esc(d.source)}</span><em>${d.chunk_count}</em></div>`).join('')
+      : '<div class="empty">尚未上傳任何文件</div>';
+  } catch (e) { $('docs').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+async function loadConvs() {
+  try {
+    const cs = await api('/conversations');
+    $('convs').innerHTML = cs.length
+      ? cs.map(c => `<div class="row ${c.id === state.conv ? 'active' : ''}" data-id="${c.id}">
+          <span>${esc(c.title || '新對話')}</span>
+          <button class="del" data-del="${c.id}" title="刪除">✕</button></div>`).join('')
+      : '<div class="empty">還沒有對話</div>';
+  } catch (e) { $('convs').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+$('convs').onclick = async e => {
+  const del = e.target.closest('[data-del]');
+  if (del) {
+    e.stopPropagation();
+    await api(`/conversations/${del.dataset.del}`, { method: 'DELETE' });
+    if (+del.dataset.del === state.conv) { state.conv = null; welcome(); }
+    return loadConvs();
+  }
+  const row = e.target.closest('[data-id]');
+  if (row) openConv(+row.dataset.id);
+};
+
+/* ── 訊息 ── */
+function welcome() {
+  $('msgs').innerHTML = `<div class="welcome">
+    <h3>問點什麼吧</h3>
+    <p>回答只會根據這個租戶已上傳的文件，並標註引用來源。</p>
+    <p>知識庫裡找不到答案時，它會直說找不到，而不是編一個。</p></div>`;
+}
+
+function bubble(role, html, sources) {
+  const el = document.createElement('div');
+  el.className = `msg ${role}`;
+  el.innerHTML = `<div class="who">${role === 'user' ? '你' : '助理'}</div>
+                  <div class="body">${html}</div><div class="sources"></div>`;
+  $('msgs').appendChild(el);
+  if (sources) paintSources(el.querySelector('.sources'), sources);
+  $('log').scrollTop = $('log').scrollHeight;
+  return el;
+}
+
+function paintSources(box, sources) {
+  box.innerHTML = sources.map((s, i) => `<details class="src">
+    <summary><span class="n">[${i + 1}]</span><span class="name">${esc(s.source)}</span>
+             <span class="d">${s.distance.toFixed(3)}</span></summary>
+    <p>${esc(s.excerpt)}</p></details>`).join('');
+}
+
+async function openConv(id) {
+  state.conv = id;
+  loadConvs();
+  $('msgs').innerHTML = '';
+  const msgs = await api(`/conversations/${id}`);
+  if (!msgs.length) return welcome();
+  for (const m of msgs) bubble(m.role, render(m.content), m.sources?.length ? m.sources : null);
+}
+
+/* ── 送出（SSE 串流）── */
+async function send() {
+  const q = $('q').value.trim();
+  if (!q || state.busy) return;
+  state.busy = true; $('send').disabled = true; $('q').value = '';
+  if (!$('msgs').querySelector('.msg')) $('msgs').innerHTML = '';
+  bubble('user', render(q));
+
+  const el = bubble('assistant', '<span class="dots"></span>');
+  const body = el.querySelector('.body');
+  const srcBox = el.querySelector('.sources');
+  let text = '';
+
+  try {
+    const r = await fetch('/chat/stream', {
+      method: 'POST',
+      headers: headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ question: q, conversation_id: state.conv }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      // SSE 事件以空行分隔
+      const blocks = buf.split('\n\n');
+      buf = blocks.pop();
+      for (const block of blocks) {
+        let name = null, data = '';
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event: ')) name = line.slice(7);
+          else if (line.startsWith('data: ')) data += line.slice(6);
+        }
+        if (!name) continue;
+        const payload = JSON.parse(data);
+        if (name === 'conversation') {
+          state.conv = payload.conversation_id;
+        } else if (name === 'sources') {
+          if (payload.sources.length) paintSources(srcBox, payload.sources);
+        } else if (name === 'delta') {
+          text += payload.text;
+          body.innerHTML = render(text) + '<span class="dots"></span>';
+          $('log').scrollTop = $('log').scrollHeight;
+        } else if (name === 'error') {
+          throw new Error(`${payload.type}: ${payload.detail}`);
+        }
+      }
+    }
+    body.innerHTML = text ? render(text) : '<span class="hint">（沒有回覆內容）</span>';
+  } catch (e) {
+    body.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  } finally {
+    state.busy = false; $('send').disabled = false; loadConvs(); $('q').focus();
+  }
+}
+
+/* ── 事件綁定 ── */
+$('send').onclick = send;
+$('q').onkeydown = e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+};
+$('q').oninput = e => {
+  e.target.style.height = 'auto';
+  e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
+};
+$('new').onclick = () => { state.conv = null; welcome(); loadConvs(); $('q').focus(); };
+$('pick').onclick = () => $('file').click();
+$('file').onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const btn = $('pick');
+  btn.disabled = true; btn.textContent = '處理中…';
+  try {
+    const fd = new FormData();
+    fd.append('file', f);
+    await api('/documents', { method: 'POST', body: fd });
+    await loadDocs();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '上傳'; e.target.value = '';
+  }
+};
+$('tenant').onchange = () => {
+  state.conv = null; welcome(); loadDocs(); loadConvs();
+};
+
+welcome(); loadDocs(); loadConvs(); $('q').focus();
+</script>
+</body>
 </html>
