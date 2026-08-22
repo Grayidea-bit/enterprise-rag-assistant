@@ -104,9 +104,9 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
   </div>
 
   <div class="tenant">
-    <label for="tenant">租戶 (X-Tenant-Id)</label>
-    <input id="tenant" value="demo" spellcheck="false">
-    <small>改成別的值就看不到這個租戶的文件與對話 —— 隔離發生在資料層。注意目前沒有身分驗證。</small>
+    <label for="apikey" id="authlabel">API 金鑰</label>
+    <input id="apikey" type="password" placeholder="erag_…" spellcheck="false" autocomplete="off">
+    <small id="authnote">租戶由金鑰決定。換一把金鑰就是另一個租戶,看不到彼此的文件與對話。</small>
   </div>
 
   <div class="section">
@@ -131,9 +131,18 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
 
 <script>
 const $ = id => document.getElementById(id);
-const state = { conv: null, busy: false };
-const tenant = () => $('tenant').value.trim() || 'default';
-const headers = (extra = {}) => ({ 'X-Tenant-Id': tenant(), ...extra });
+const state = { conv: null, busy: false, mode: null, tenant: null };
+const KEY_STORE = 'erag_api_key';
+const apiKey = () => $('apikey').value.trim();
+
+function headers(extra = {}) {
+  const h = { ...extra };
+  const k = apiKey();
+  if (k) h['Authorization'] = `Bearer ${k}`;
+  // 開發模式(AUTH_MODE=disabled)下金鑰欄位改當租戶欄位用
+  if (state.mode === 'disabled' && k) h['X-Tenant-Id'] = k;
+  return h;
+}
 
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 // 只做最低限度的呈現:標註引用、粗體、行內程式碼。刻意不引入 markdown 函式庫。
@@ -144,8 +153,32 @@ const render = s => esc(s)
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: headers(opts.headers) });
+  if (r.status === 401) throw new Error('金鑰無效或未提供');
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.status === 204 ? null : r.json();
+}
+
+/* 用 /me 確認金鑰有效並取得租戶;順便得知伺服器的認證模式 */
+async function whoami() {
+  const note = $('authnote');
+  try {
+    const me = await api('/me');
+    state.mode = me.auth_mode;
+    state.tenant = me.tenant_id;
+    if (me.auth_mode === 'disabled') {
+      $('authlabel').textContent = '租戶 (X-Tenant-Id)';
+      $('apikey').type = 'text';
+      $('apikey').placeholder = 'demo';
+      note.innerHTML = `⚠ 伺服器的 AUTH_MODE 是 <code>disabled</code>,這個欄位當租戶用,沒有任何驗證。目前租戶:<strong>${esc(me.tenant_id)}</strong>`;
+    } else {
+      note.innerHTML = `已驗證,目前租戶:<strong>${esc(me.tenant_id)}</strong>`;
+    }
+    return true;
+  } catch (e) {
+    state.mode = 'api_key'; state.tenant = null;
+    note.innerHTML = `<span style="color:var(--accent)">${esc(e.message)}</span> — 用 <code>python scripts/manage_api_keys.py create --tenant &lt;名稱&gt;</code> 產生一把。`;
+    return false;
+  }
 }
 
 /* ── 側欄 ── */
@@ -303,11 +336,25 @@ $('file').onchange = async e => {
     btn.disabled = false; btn.textContent = '上傳'; e.target.value = '';
   }
 };
-$('tenant').onchange = () => {
-  state.conv = null; welcome(); loadDocs(); loadConvs();
+async function refresh() {
+  state.conv = null;
+  welcome();
+  const authed = await whoami();
+  if (!authed) {
+    $('docs').innerHTML = '<div class="empty">請先輸入有效金鑰</div>';
+    $('convs').innerHTML = '<div class="empty">請先輸入有效金鑰</div>';
+    return;
+  }
+  await Promise.all([loadDocs(), loadConvs()]);
+}
+
+$('apikey').onchange = () => {
+  localStorage.setItem(KEY_STORE, apiKey());
+  refresh();
 };
 
-welcome(); loadDocs(); loadConvs(); $('q').focus();
+$('apikey').value = localStorage.getItem(KEY_STORE) || '';
+refresh(); $('q').focus();
 </script>
 </body>
 </html>

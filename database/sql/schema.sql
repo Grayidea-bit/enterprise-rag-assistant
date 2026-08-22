@@ -2,6 +2,9 @@
 -- psql enterprise_rag -f database/sql/schema.sql
 
 CREATE EXTENSION IF NOT EXISTS vector;
+-- 混合檢索的詞彙那一路。之所以用 trigram 而不是 tsvector,是因為
+-- to_tsvector 對中文不分詞 —— 整句話會變成單一 token,全文檢索完全失效。
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- 文件層級:原始檔、metadata
 -- tenant_id 是租戶隔離的依據。目前沒有身分驗證,值由 X-Tenant-Id header 帶入,
@@ -41,6 +44,10 @@ CREATE INDEX IF NOT EXISTS idx_chunks_tenant
 CREATE INDEX IF NOT EXISTS idx_chunks_document
     ON chunks (document_id, chunk_index);
 
+-- 詞彙檢索用。支援 <% (word_similarity) 運算子
+CREATE INDEX IF NOT EXISTS idx_chunks_content_trgm
+    ON chunks USING gin (content gin_trgm_ops);
+
 -- 對話層級:一個 conversation 就是一串問答
 CREATE TABLE IF NOT EXISTS conversations (
     id          BIGSERIAL PRIMARY KEY,
@@ -68,3 +75,20 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation
     ON messages (conversation_id, id);
+
+-- API 金鑰。只存 SHA-256 雜湊,明文金鑰產生後就不再留存。
+-- 這裡用 sha256 而不是 bcrypt/argon2 是刻意的:金鑰是 32 bytes 的高熵隨機值,
+-- 沒有字典攻擊的空間,慢雜湊只會讓每個請求都付出不必要的成本。
+-- (低熵的「使用者密碼」則相反,那種一定要用慢雜湊。)
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           BIGSERIAL PRIMARY KEY,
+    key_hash     TEXT NOT NULL UNIQUE,
+    tenant_id    TEXT NOT NULL,
+    name         TEXT,
+    prefix       TEXT NOT NULL,          -- 金鑰前綴,只為了讓人在列表裡認得出來
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    last_used_at TIMESTAMPTZ,
+    revoked_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys (tenant_id);

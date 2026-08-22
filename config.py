@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import (
@@ -44,14 +45,40 @@ class EnvSettings(BaseSettings):
         description="Embedding 向量維度（需與 schema.sql 的 VECTOR(n) 一致）",
     )
 
+    # OpenAI SDK 預設 read timeout 是 600 秒,對一個 HTTP 端點來說太長了 ——
+    # 端點掛住十分鐘,呼叫端只會看到連線一直不回應。
+    LLM_TIMEOUT_SECONDS: float = Field(
+        default=120.0,
+        gt=0,
+        description="單次 LLM / embedding 請求的逾時秒數",
+    )
+
+    # agent 單次 run 的煞車。pydantic-ai 預設 request_limit=50、
+    # tool_calls_limit 無上限,失控的工具迴圈可以燒掉大量 token。
+    AGENT_REQUEST_LIMIT: int = Field(default=6, ge=1)
+    AGENT_TOOL_CALLS_LIMIT: int = Field(default=4, ge=1)
+
+    # vector = 只用向量;hybrid = 向量 + trigram 詞彙,用 RRF 融合
+    RETRIEVAL_MODE: Literal["vector", "hybrid"] = Field(
+        default="hybrid",
+        description="檢索模式",
+    )
+
     DATABASE_URL: str = Field(
         default="postgresql://graytsao@localhost:5432/enterprise_rag",
     )
 
-    # 目前沒有身分驗證,租戶由 X-Tenant-Id header 帶入;沒帶就落到這個預設值
+    # api_key = 必須帶有效金鑰,租戶由金鑰決定(X-Tenant-Id 一律忽略)
+    # disabled = 開發模式,直接採信 X-Tenant-Id。不要用在任何對外環境。
+    AUTH_MODE: Literal["api_key", "disabled"] = Field(
+        default="api_key",
+        description="認證模式",
+    )
+
+    # 只在 AUTH_MODE=disabled 時有意義:X-Tenant-Id 未帶時的預設租戶
     DEFAULT_TENANT_ID: str = Field(
         default="default",
-        description="X-Tenant-Id 未帶時使用的租戶",
+        description="開發模式下 X-Tenant-Id 未帶時使用的租戶",
     )
 
     model_config = SettingsConfigDict(

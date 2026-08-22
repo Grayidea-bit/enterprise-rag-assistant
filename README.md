@@ -10,11 +10,11 @@ through the OpenAI-compatible interface, and the endpoint, key, and model names
 all live in `.env`. Switching between a self-hosted Ollama, NVIDIA NIM, vLLM, or
 OpenAI itself is a one-file change — no code edits.
 
-> **Status: usable end to end, with a UI.** Ingest (upload → chunk → embed → store),
-> query (retrieve → cite → answer, streamed), multi-turn conversations, and a chat
-> interface at `GET /` are all implemented and verified by four smoke tests, with
-> per-tenant isolation enforced in the data layer. What's still missing:
-> **authentication**, PDF/docx parsing, retrieval-quality evaluation, and schema
+> **Status: usable end to end, with a UI and a retrieval benchmark.** Ingest, query,
+> multi-turn conversations, hybrid retrieval, and a chat interface at `GET /` are
+> implemented behind API-key authentication, verified by five smoke tests, and
+> measured by an evaluation harness with a 20-document / 36-question ground-truth
+> set. What's still missing: PDF/docx parsing, request timeouts, and schema
 > migrations. See the [Roadmap](#roadmap).
 
 ---
@@ -50,17 +50,46 @@ against the earlier context.
 - [`database/func.py`](database/func.py) — async, tenant-scoped: `upsert_document`,
   `insert_chunks`, `delete_chunks`, `search_chunks`, `list_documents`
 
-### Tenant isolation
+### Tenant isolation and authentication
 
-Every row in `documents` and `chunks` carries a `tenant_id`, and every function in
-`database/func.py` requires one. The tenant comes from the `X-Tenant-Id` request
-header, falling back to `DEFAULT_TENANT_ID`.
+Every row in `documents`, `chunks`, `conversations`, and `messages` carries a
+`tenant_id`, and every function in `database/func.py` requires one — isolation is
+enforced in SQL, not in the handlers.
 
-> ⚠️ **There is no authentication.** What is isolated is the *data model and the
-> retrieval path*, not identity — any caller can claim any tenant. Adding real
-> authentication in front of `resolve_tenant()` is a prerequisite for any real
-> deployment. This split is deliberate: tenant columns are painful to retrofit,
-> auth is not.
+Callers authenticate with an API key, and **the tenant is derived from the key**:
+
+```bash
+python scripts/manage_api_keys.py create --tenant acme --name "Marketing"
+#   erag_cPuDVa0-LgWXx8a1ekywKiwynM2dYLm44ZKr_fUAg6c   ← shown once, never again
+
+curl localhost:8000/me -H "Authorization: Bearer erag_…"
+# {"tenant_id": "acme", "auth_mode": "api_key"}
+```
+
+`X-Tenant-Id` is **ignored entirely** when `AUTH_MODE=api_key`. If a valid key could
+be combined with an arbitrary tenant header, the key would authenticate you but not
+constrain you, and the isolation would be decorative. A smoke test asserts this
+specific attack fails.
+
+Keys are stored as **SHA-256 hashes** — the plaintext exists only in the output of
+`create`. Fast hashing is the right call here, not a weakness: the key is 32 bytes of
+`secrets.token_urlsafe` entropy, so there is no dictionary to attack, and bcrypt would
+just add latency to every request. (User-chosen *passwords* are the opposite case and
+do need a slow hash.)
+
+Revocation is immediate:
+
+```bash
+python scripts/manage_api_keys.py list
+python scripts/manage_api_keys.py revoke 3
+```
+
+Invalid and revoked keys return the same `401` so an attacker cannot learn whether a
+key was ever real.
+
+> **Dev escape hatch.** `AUTH_MODE=disabled` restores the old behaviour of trusting
+> `X-Tenant-Id`, for local work where minting keys is friction. The server prints a
+> warning on every startup in that mode. Do not use it anywhere reachable.
 
 ## Tech stack
 
@@ -89,11 +118,12 @@ changing `.env` alone.
 ├── index.html             # Single-file chat UI served at GET / (no build step)
 ├── requirements.txt
 ├── api/
-│   ├── deps.py            # resolve_tenant (X-Tenant-Id)
+│   ├── deps.py            # resolve_tenant — the single auth choke point
 │   ├── upload_files.py    # POST /documents (ingest), GET /documents (list)
 │   ├── conversations.py   # Conversation CRUD + history reconstruction
 │   └── chat.py            # POST /search, /chat, /chat/stream
 ├── core/
+│   ├── auth.py            # API key generation, hashing, header extraction
 │   ├── llm.py             # Chat model + shared OpenAI-compatible provider
 │   ├── embedding.py       # embed_query / embed_documents + dim validation
 │   ├── chunking.py        # Recursive character splitter
@@ -106,11 +136,16 @@ changing `.env` alone.
 │   └── sql/
 │       ├── schema.sql     # documents + chunks tables, HNSW index
 │       └── reset.sql      # drops tables (dev only)
+├── eval/
+│   └── dataset.json       # 20 documents, 36 questions with ground truth
 ├── scripts/
+│   ├── eval_retrieval.py  # recall@k / MRR, vector vs hybrid
+│   ├── manage_api_keys.py # create / list / revoke API keys
 │   ├── smoke_llm.py       # Verifies config → embedding → chat → tool calling
 │   ├── smoke_ingest.py    # Verifies upload → chunk → embed → store → isolation
 │   ├── smoke_chat.py      # Verifies search → cited answer → refusal → streaming
-│   └── smoke_conversation.py  # Verifies multi-turn history, isolation, cascade
+│   ├── smoke_conversation.py  # Verifies multi-turn history, isolation, cascade
+│   └── smoke_auth.py      # Verifies key auth, revocation, tenant spoofing
 ├── Dockerfile
 ├── docker-compose.yaml    # app + pgvector/pgvector:pg18
 └── .dockerignore
@@ -150,7 +185,12 @@ cp .env.example .env
 | `EMBEDDING_API_KEY`  |          | See the fallback rule below                               |
 | `EMBEDDING_MODEL`    |    ✅    | Embedding model name                                      |
 | `EMBEDDING_DIM`      |          | Default `1024`; must match `VECTOR(n)` in `schema.sql`    |
-| `DEFAULT_TENANT_ID`  |          | Tenant used when no `X-Tenant-Id` header is sent           |
+| `RETRIEVAL_MODE`     |          | `hybrid` (default) or `vector` — see [Retrieval](#retrieval) |
+| `LLM_TIMEOUT_SECONDS`|          | Per-request timeout, default `120` (SDK default is 600)   |
+| `AGENT_REQUEST_LIMIT`|          | Model calls per `/chat` run, default `6`                  |
+| `AGENT_TOOL_CALLS_LIMIT` |      | Tool calls per `/chat` run, default `4`                   |
+| `AUTH_MODE`          |          | `api_key` (default) or `disabled` — see above              |
+| `DEFAULT_TENANT_ID`  |          | Only used when `AUTH_MODE=disabled`                        |
 | `DATABASE_URL`       |          | PostgreSQL DSN                                            |
 
 **Key fallback rule.** The embedding key is inherited from `CHAT_API_KEY` *only*
@@ -192,6 +232,68 @@ EMBEDDING_DIM=1024
 | -------- | ----------------------- |
 | `prompt` | The agent system prompt |
 
+## Retrieval
+
+Two modes, switchable with `RETRIEVAL_MODE` in `.env` or per-request via `"mode"` on
+`POST /search`:
+
+- **`vector`** — cosine kNN over the HNSW index.
+- **`hybrid`** (default) — the vector ranking fused with a trigram lexical ranking
+  using **Reciprocal Rank Fusion** (`score = Σ 1/(60 + rank)`). RRF compares only
+  ranks, so the two arms' wildly different score scales never have to be reconciled.
+
+### Why trigram and not `tsvector`
+
+PostgreSQL's full-text search does not segment Chinese. The entire sentence becomes a
+single token:
+
+```sql
+SELECT to_tsvector('simple', '國內出差住宿費核實報支上限為新臺幣二千八百元');
+-- → '國內出差住宿費核實報支上限為新臺幣二千八百元':1     ← one token, useless
+
+SELECT to_tsvector('english', 'lodging expenses are reimbursed up to 2800 dollars');
+-- → '2800':7 'dollar':8 'expens':2 'lodg':1 'reimburs':4  ← works fine
+```
+
+So the lexical arm uses `pg_trgm` character trigrams instead, which are
+language-agnostic. On Chinese they behave close to exact substring matching —
+measured `word_similarity` was 0.50–0.71 for a matching chunk and **exactly 0.0** for
+everything else. That sparseness is why the lexical arm filters to non-zero matches
+before fusion; feeding a list of arbitrarily-ordered zero-score rows into RRF would
+just inject noise.
+
+`pg_trgm`'s default `word_similarity_threshold` of 0.6 is too strict here (a correct
+match measured 0.50 and would be discarded), so `search_chunks_hybrid` lowers it to
+0.25 with `SET LOCAL`, scoped to the transaction.
+
+### Measured results
+
+```bash
+python scripts/eval_retrieval.py --chunk-size 150 --overlap 30
+```
+
+20 documents (6 with answers, 14 topically-adjacent distractors sharing vocabulary),
+36 questions in three flavours — `semantic` (paraphrased), `lexical` (shares wording),
+and `exact` (hinges on a figure or form code, dense retrieval's classic weak spot).
+Ground truth is a `must_contain` substring rather than a chunk id, so the eval set
+survives changes to the chunking strategy.
+
+| Mode | recall@1 | recall@3 | recall@5 | MRR | ms/query |
+| --- | --- | --- | --- | --- | --- |
+| vector | 94.4% | 100% | 100% | 0.972 | 7 |
+| **hybrid** | **97.2%** | 100% | 100% | **0.986** | 9 |
+
+**Read this honestly: the win is small and the benchmark is saturated.** `bge-m3` is
+a strong multilingual retriever and already handles exact identifiers well — a direct
+probe of `IR-001`, `千分之一`, `百分之四十` found the right chunk at rank 1–2 with
+vector alone. Hybrid moved one question from rank 2 to rank 1; recall@3 and recall@5
+were already at ceiling for both modes, so only recall@1 and MRR carry any signal at
+this corpus size (31 chunks).
+
+The benchmark's job right now is to be a **regression guard and a harness**, not proof
+that hybrid is dramatically better. Making it discriminate properly needs a corpus an
+order of magnitude larger — that's tracked in the Roadmap.
+
 ## The chat UI
 
 `GET /` serves a single-file interface — no build step, no npm, no framework. It
@@ -201,12 +303,14 @@ to watch the same knowledge base become invisible.
 
 ```bash
 docker compose up -d db
+python scripts/manage_api_keys.py create --tenant demo   # copy the key
 uvicorn server:app --reload
-open http://localhost:8000
+open http://localhost:8000                               # paste the key in the sidebar
 ```
 
-The tenant field in the sidebar is the demo's point: change it and the documents and
-conversations vanish, because isolation happens in SQL, not in the UI.
+The key field in the sidebar is the demo's point: paste a different tenant's key and
+the documents and conversations vanish, because isolation happens in SQL and the
+tenant comes from the key — there is no client-supplied value to tamper with.
 
 ## API
 
@@ -217,7 +321,7 @@ synchronously and returns once everything is committed.
 
 ```bash
 curl -X POST http://localhost:8000/documents \
-  -H "X-Tenant-Id: acme" \
+  -H "Authorization: Bearer erag_…" \
   -F "file=@handbook.md" \
   -F "title=Employee Handbook"
 ```
@@ -249,7 +353,7 @@ no chunkable content · `422` invalid `chunk_size`/`overlap`.
 ### `GET /documents` — list
 
 ```bash
-curl http://localhost:8000/documents -H "X-Tenant-Id: acme"
+curl http://localhost:8000/documents -H "Authorization: Bearer erag_…"
 ```
 
 Returns that tenant's documents with a `chunk_count` each. Only ever returns rows
@@ -263,11 +367,11 @@ follow-up below resolves against the previous answer:
 
 ```bash
 # → {"answer": "…十四天…", "conversation_id": 7, "sources": [...]}
-curl -X POST localhost:8000/chat -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+curl -X POST localhost:8000/chat -H "Authorization: Bearer erag_…" -H "Content-Type: application/json" \
   -d '{"question": "特休有幾天?"}'
 
 # 「那滿三年之後呢?」 — no subject; only works because history is replayed
-curl -X POST localhost:8000/chat -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+curl -X POST localhost:8000/chat -H "Authorization: Bearer erag_…" -H "Content-Type: application/json" \
   -d '{"question": "那滿三年之後呢?", "conversation_id": 7}'
 ```
 
@@ -294,18 +398,24 @@ before blaming the model for a bad answer.
 
 ```bash
 curl -X POST http://localhost:8000/search \
-  -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer erag_…" -H "Content-Type: application/json" \
   -d '{"query": "how much can I claim for lodging?", "limit": 5}'
 ```
 
 `limit` is 1–50 (default 5). `max_distance` optionally drops hits above a cosine
-distance — without it you always get `limit` rows back, however irrelevant.
+distance — without it you always get `limit` rows back, however irrelevant. In hybrid
+mode `max_distance` constrains **only the vector arm**: a chunk found purely by literal
+match can legitimately sit far away in embedding space, and filtering on distance would
+silently delete the lexical arm's whole contribution.
+
+`"mode": "vector" | "hybrid"` overrides `RETRIEVAL_MODE` for a single request, which is
+how the evaluation harness compares the two.
 
 ### `POST /chat` — retrieval-augmented answer
 
 ```bash
 curl -X POST http://localhost:8000/chat \
-  -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer erag_…" -H "Content-Type: application/json" \
   -d '{"question": "國內出差住宿費上限是多少?"}'
 ```
 
@@ -315,6 +425,14 @@ curl -X POST http://localhost:8000/chat \
   "sources": [{"source": "差旅規定.md", "title": "…", "distance": 0.36, "excerpt": "…"}]
 }
 ```
+
+Every run is bounded: at most `AGENT_REQUEST_LIMIT` model calls and
+`AGENT_TOOL_CALLS_LIMIT` tool calls, and each HTTP call to the LLM endpoint times out
+after `LLM_TIMEOUT_SECONDS`. Without those, a model that keeps re-searching can loop
+until it exhausts your budget, and the OpenAI SDK's own 600-second default read
+timeout would leave a caller hanging for ten minutes. Exceeding the run budget returns
+**429**; a dead or slow endpoint returns **504**; an endpoint that answers with an
+error returns **502**.
 
 The agent decides when to call `search_knowledge_base`; `sources` reports the chunks
 it actually retrieved, deduplicated and sorted by distance. An empty `sources` array
@@ -362,6 +480,18 @@ To try a smaller/faster model without editing `.env`:
 ```bash
 python scripts/smoke_llm.py --model qwen3:8b
 ```
+
+Then verify authentication:
+
+```bash
+python scripts/smoke_auth.py
+```
+
+Nine checks, including the one that matters most: a request carrying a valid key
+**plus** an `X-Tenant-Id` header naming a different tenant must not see that tenant's
+data. Also covers 401 shapes, `X-API-Key` as an alternative header, immediate
+revocation, `last_used_at` tracking, and that no plaintext key ever reaches the
+database.
 
 Then verify the ingest pipeline against a real database:
 
@@ -487,9 +617,12 @@ the search until the limit is met, and degrades gracefully on older pgvector.
 - [x] `POST /search`, `POST /chat`, and SSE streaming at `POST /chat/stream`
 - [x] Multi-turn conversations with persisted history and sources
 - [x] Single-file chat UI at `GET /` — streaming, citations, tenant switcher
-- [ ] Authentication in front of `resolve_tenant()`
-- [ ] Retrieval-quality evaluation (recall@k), hybrid BM25 + vector search, reranking
-- [ ] Timeouts and `UsageLimits` on `/chat`
+- [x] API-key authentication; tenant derived from the key, never from a header
+- [x] Retrieval evaluation harness (recall@k, MRR, split by question type)
+- [x] Hybrid retrieval: vector + trigram lexical, fused with RRF
+- [ ] A corpus large enough for the benchmark to discriminate above recall@1
+- [ ] Reranking (no cross-encoder available on the current endpoint)
+- [x] Request timeouts and per-run usage limits on `/chat`
 - [ ] PDF / docx parsing (currently plain text and Markdown only)
 - [ ] Schema migrations (`schema.sql` only runs on a fresh volume)
 
@@ -501,9 +634,12 @@ the search until the limit is met, and degrades gracefully on older pgvector.
 - The `POSTGRES_PASSWORD: secret` in `docker-compose.yaml` and the matching DSN
   are **development defaults only**. Use a strong, secret-managed password and a
   hardened Postgres configuration in production.
-- Tenant isolation exists in the data model and is enforced by every function in
-  `database/func.py`, but **there is no authentication** — the `X-Tenant-Id` header
-  is taken at face value, so any caller can read any tenant. Put real auth in front
-  of `resolve_tenant()` before exposing this anywhere. Tracked in the Roadmap.
+- Authentication is API-key based; keys are stored only as SHA-256 hashes and the
+  tenant is derived from the key, never from a client-supplied header.
+- `AUTH_MODE=disabled` disables authentication entirely for local development. The
+  server warns loudly at startup. Never enable it on a reachable host.
+- LLM calls time out after `LLM_TIMEOUT_SECONDS` and each `/chat` run is capped by
+  `AGENT_REQUEST_LIMIT` / `AGENT_TOOL_CALLS_LIMIT`. There is still **no per-caller rate
+  limiting** — one key can issue unlimited requests. Tracked below.
 - Uploads are capped at 2 MB and restricted to UTF-8 text; nothing is executed or
   rendered from uploaded content.

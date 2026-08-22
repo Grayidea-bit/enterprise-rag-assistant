@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pydantic_ai import RunContext
 
 from core.embedding import embed_query
-from database.func import search_chunks
+from database.func import retrieve
 
 
 @dataclass
@@ -51,9 +51,10 @@ async def search_knowledge_base(ctx: RunContext[RagDeps], query: str) -> str:
         query: 要搜尋的問句或關鍵語句,使用與使用者相同的語言。
     """
     embedding = await embed_query(query)
-    rows = await search_chunks(
+    rows = await retrieve(
         ctx.deps.tenant_id,
         embedding,
+        query,
         limit=ctx.deps.limit,
         max_distance=ctx.deps.max_distance,
     )

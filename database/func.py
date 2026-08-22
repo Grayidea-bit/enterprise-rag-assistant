@@ -7,6 +7,7 @@ import psycopg
 from pgvector import Vector
 from psycopg.types.json import Jsonb
 
+from config import env_settings
 from database.conn import pool
 
 # pgvector 0.8 才有的 iterative scan;探測一次後快取結果
@@ -140,6 +141,105 @@ async def search_chunks(
             # SET LOCAL 只在這個交易內生效,不會汙染連線池裡的其他使用者
             await conn.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
         return await (await conn.execute(sql, params)).fetchall()
+
+
+# RRF 的平滑常數。60 是原論文(Cormack et al. 2009)的建議值,
+# 作用是壓低頭部名次的權重差距,讓兩路排名不會被其中一路的第一名獨占。
+RRF_K = 60
+
+# 詞彙那一路的相似度門檻。pg_trgm 預設 0.6 對中文太嚴 —— 實測「住宿費上限」
+# 對命中的段落只有 0.50,會被整個濾掉。
+WORD_SIMILARITY_THRESHOLD = 0.25
+
+
+async def search_chunks_hybrid(
+    tenant_id: str,
+    query_embedding: Sequence[float],
+    query_text: str,
+    limit: int = 5,
+    max_distance: float | None = None,
+) -> list[tuple[str, float, str | None, str]]:
+    """向量 + trigram 詞彙的混合檢索,用 RRF 融合兩路排名。
+
+    兩路是互補的:向量處理語意(「特休天數」→「特別休假」),
+    trigram 處理字面(金額、編號、專有名詞這些 embedding 會糊掉的東西)。
+    融合只看名次不看分數,所以兩路分數尺度天差地遠也無所謂。
+
+    注意 max_distance 只套用在向量那一路 —— 純靠字面命中的段落本來就
+    可能離查詢向量很遠,拿距離去濾會把詞彙那一路的貢獻全部砍掉。
+    """
+    vec_filter = ""
+    params: dict[str, Any] = {
+        "q": Vector(list(query_embedding)),
+        "text": query_text,
+        "tenant": tenant_id,
+        "limit": limit,
+        # 每一路各取這麼多候選再融合。取太少會讓只在單一路名列前茅的段落進不了決選。
+        "pool": max(limit * 4, 20),
+        "k": RRF_K,
+    }
+    if max_distance is not None:
+        vec_filter = " AND c.embedding <=> %(q)s <= %(max_distance)s"
+        params["max_distance"] = max_distance
+
+    sql = f"""
+        WITH vec AS (
+            SELECT c.id, ROW_NUMBER() OVER (ORDER BY c.embedding <=> %(q)s) AS rank
+            FROM chunks c
+            WHERE c.tenant_id = %(tenant)s{vec_filter}
+            ORDER BY c.embedding <=> %(q)s
+            LIMIT %(pool)s
+        ),
+        lex AS (
+            SELECT c.id,
+                   ROW_NUMBER() OVER (
+                       ORDER BY word_similarity(%(text)s, c.content) DESC, c.id
+                   ) AS rank
+            FROM chunks c
+            WHERE c.tenant_id = %(tenant)s AND %(text)s <%% c.content
+            ORDER BY word_similarity(%(text)s, c.content) DESC, c.id
+            LIMIT %(pool)s
+        ),
+        fused AS (
+            SELECT id, SUM(1.0 / (%(k)s + rank)) AS score
+            FROM (SELECT id, rank FROM vec UNION ALL SELECT id, rank FROM lex) u
+            GROUP BY id
+        )
+        SELECT c.content, c.embedding <=> %(q)s AS distance, d.title, d.source
+        FROM fused f
+        JOIN chunks c ON c.id = f.id
+        JOIN documents d ON d.id = c.document_id
+        ORDER BY f.score DESC, distance
+        LIMIT %(limit)s
+    """
+
+    use_iterative = await _supports_iterative_scan()
+    async with pool.connection() as conn:
+        if use_iterative:
+            await conn.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
+        # SET LOCAL 是 utility 語句,不接受參數化的 %s;值是模組常數,
+        # 用 float() 強制轉型確保內插進去的一定是數字
+        await conn.execute(
+            "SET LOCAL pg_trgm.word_similarity_threshold = "
+            f"{float(WORD_SIMILARITY_THRESHOLD)}"
+        )
+        return await (await conn.execute(sql, params)).fetchall()
+
+
+async def retrieve(
+    tenant_id: str,
+    query_embedding: Sequence[float],
+    query_text: str,
+    limit: int = 5,
+    max_distance: float | None = None,
+    mode: str | None = None,
+) -> list[tuple[str, float, str | None, str]]:
+    """依設定的檢索模式取回段落。mode 不給就用 env 的 RETRIEVAL_MODE。"""
+    if (mode or env_settings.RETRIEVAL_MODE) == "vector":
+        return await search_chunks(tenant_id, query_embedding, limit, max_distance)
+    return await search_chunks_hybrid(
+        tenant_id, query_embedding, query_text, limit, max_distance
+    )
 
 
 async def list_documents(tenant_id: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -306,5 +406,78 @@ async def delete_conversation(tenant_id: str, conversation_id: int) -> bool:
         cur = await conn.execute(
             "DELETE FROM conversations WHERE id = %s AND tenant_id = %s",
             (conversation_id, tenant_id),
+        )
+        return cur.rowcount > 0
+
+
+# ── API 金鑰 ────────────────────────────────────────────────────
+
+
+async def insert_api_key(
+    key_hash: str, tenant_id: str, name: str | None, prefix: str
+) -> int:
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                """
+                INSERT INTO api_keys (key_hash, tenant_id, name, prefix)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (key_hash, tenant_id, name, prefix),
+            )
+        ).fetchone()
+        if not row:
+            raise RuntimeError("Insert api key failed")
+        return row[0]
+
+
+async def tenant_for_key(key_hash: str) -> str | None:
+    """回傳金鑰對應的租戶,已撤銷或不存在則回 None,並順手更新 last_used_at。"""
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                """
+                UPDATE api_keys SET last_used_at = now()
+                WHERE key_hash = %s AND revoked_at IS NULL
+                RETURNING tenant_id
+                """,
+                (key_hash,),
+            )
+        ).fetchone()
+        return row[0] if row else None
+
+
+async def list_api_keys(tenant_id: str | None = None) -> list[dict[str, Any]]:
+    sql = """
+        SELECT id, tenant_id, name, prefix, created_at, last_used_at, revoked_at
+        FROM api_keys
+    """
+    params: tuple[Any, ...] = ()
+    if tenant_id:
+        sql += " WHERE tenant_id = %s"
+        params = (tenant_id,)
+    sql += " ORDER BY created_at DESC"
+    async with pool.connection() as conn:
+        rows = await (await conn.execute(sql, params)).fetchall()
+    return [
+        {
+            "id": r[0],
+            "tenant_id": r[1],
+            "name": r[2],
+            "prefix": r[3],
+            "created_at": r[4],
+            "last_used_at": r[5],
+            "revoked_at": r[6],
+        }
+        for r in rows
+    ]
+
+
+async def revoke_api_key(key_id: int) -> bool:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "UPDATE api_keys SET revoked_at = now() WHERE id = %s AND revoked_at IS NULL",
+            (key_id,),
         )
         return cur.rowcount > 0
