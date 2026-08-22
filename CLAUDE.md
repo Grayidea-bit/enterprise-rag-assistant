@@ -139,6 +139,11 @@ Module roles:
   (vector + trigram fused with RRF). Call `retrieve()`, not the two directly.
 - `scripts/smoke_llm.py`, `scripts/smoke_ingest.py` — the two verification scripts.
 
+`docs/architecture-decisions.md` records *why* the non-obvious choices were made. The
+list below is the operational counterpart: what breaks if you undo them. When you change
+something that contradicts a decision there, update that document too — a stale rationale
+is worse than none.
+
 ## Things that will bite you
 
 - **Empty-string API keys are not the same as `None`.** `OpenAIProvider` only

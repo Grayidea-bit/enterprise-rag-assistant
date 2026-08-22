@@ -20,6 +20,11 @@ OpenAI itself is a one-file change — no code edits.
 > supported. What's still missing: rate limiting, `.docx`, and OCR for scanned PDFs.
 > See the [Roadmap](#roadmap).
 
+📐 **[Architecture decisions](docs/architecture-decisions.md)** — why trigram instead of
+`tsvector`, why the tenant comes from the key and not a header, why SHA-256 instead of
+bcrypt, why migrations bypass the connection pool, and what the retrieval benchmark can
+and cannot prove.
+
 ---
 
 ## Architecture
