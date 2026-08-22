@@ -408,3 +408,76 @@ async def delete_conversation(tenant_id: str, conversation_id: int) -> bool:
             (conversation_id, tenant_id),
         )
         return cur.rowcount > 0
+
+
+# ── API 金鑰 ────────────────────────────────────────────────────
+
+
+async def insert_api_key(
+    key_hash: str, tenant_id: str, name: str | None, prefix: str
+) -> int:
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                """
+                INSERT INTO api_keys (key_hash, tenant_id, name, prefix)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (key_hash, tenant_id, name, prefix),
+            )
+        ).fetchone()
+        if not row:
+            raise RuntimeError("Insert api key failed")
+        return row[0]
+
+
+async def tenant_for_key(key_hash: str) -> str | None:
+    """回傳金鑰對應的租戶,已撤銷或不存在則回 None,並順手更新 last_used_at。"""
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                """
+                UPDATE api_keys SET last_used_at = now()
+                WHERE key_hash = %s AND revoked_at IS NULL
+                RETURNING tenant_id
+                """,
+                (key_hash,),
+            )
+        ).fetchone()
+        return row[0] if row else None
+
+
+async def list_api_keys(tenant_id: str | None = None) -> list[dict[str, Any]]:
+    sql = """
+        SELECT id, tenant_id, name, prefix, created_at, last_used_at, revoked_at
+        FROM api_keys
+    """
+    params: tuple[Any, ...] = ()
+    if tenant_id:
+        sql += " WHERE tenant_id = %s"
+        params = (tenant_id,)
+    sql += " ORDER BY created_at DESC"
+    async with pool.connection() as conn:
+        rows = await (await conn.execute(sql, params)).fetchall()
+    return [
+        {
+            "id": r[0],
+            "tenant_id": r[1],
+            "name": r[2],
+            "prefix": r[3],
+            "created_at": r[4],
+            "last_used_at": r[5],
+            "revoked_at": r[6],
+        }
+        for r in rows
+    ]
+
+
+async def revoke_api_key(key_id: int) -> bool:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "UPDATE api_keys SET revoked_at = now() WHERE id = %s AND revoked_at IS NULL",
+            (key_id,),
+        )
+        return cur.rowcount > 0

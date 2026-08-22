@@ -12,10 +12,10 @@ OpenAI itself is a one-file change — no code edits.
 
 > **Status: usable end to end, with a UI and a retrieval benchmark.** Ingest, query,
 > multi-turn conversations, hybrid retrieval, and a chat interface at `GET /` are
-> implemented, verified by four smoke tests, and measured by an evaluation harness
-> with a 20-document / 36-question ground-truth set. What's still missing:
-> **authentication**, PDF/docx parsing, request timeouts, and schema migrations. See
-> the [Roadmap](#roadmap).
+> implemented behind API-key authentication, verified by five smoke tests, and
+> measured by an evaluation harness with a 20-document / 36-question ground-truth
+> set. What's still missing: PDF/docx parsing, request timeouts, and schema
+> migrations. See the [Roadmap](#roadmap).
 
 ---
 
@@ -50,17 +50,46 @@ against the earlier context.
 - [`database/func.py`](database/func.py) — async, tenant-scoped: `upsert_document`,
   `insert_chunks`, `delete_chunks`, `search_chunks`, `list_documents`
 
-### Tenant isolation
+### Tenant isolation and authentication
 
-Every row in `documents` and `chunks` carries a `tenant_id`, and every function in
-`database/func.py` requires one. The tenant comes from the `X-Tenant-Id` request
-header, falling back to `DEFAULT_TENANT_ID`.
+Every row in `documents`, `chunks`, `conversations`, and `messages` carries a
+`tenant_id`, and every function in `database/func.py` requires one — isolation is
+enforced in SQL, not in the handlers.
 
-> ⚠️ **There is no authentication.** What is isolated is the *data model and the
-> retrieval path*, not identity — any caller can claim any tenant. Adding real
-> authentication in front of `resolve_tenant()` is a prerequisite for any real
-> deployment. This split is deliberate: tenant columns are painful to retrofit,
-> auth is not.
+Callers authenticate with an API key, and **the tenant is derived from the key**:
+
+```bash
+python scripts/manage_api_keys.py create --tenant acme --name "Marketing"
+#   erag_cPuDVa0-LgWXx8a1ekywKiwynM2dYLm44ZKr_fUAg6c   ← shown once, never again
+
+curl localhost:8000/me -H "Authorization: Bearer erag_…"
+# {"tenant_id": "acme", "auth_mode": "api_key"}
+```
+
+`X-Tenant-Id` is **ignored entirely** when `AUTH_MODE=api_key`. If a valid key could
+be combined with an arbitrary tenant header, the key would authenticate you but not
+constrain you, and the isolation would be decorative. A smoke test asserts this
+specific attack fails.
+
+Keys are stored as **SHA-256 hashes** — the plaintext exists only in the output of
+`create`. Fast hashing is the right call here, not a weakness: the key is 32 bytes of
+`secrets.token_urlsafe` entropy, so there is no dictionary to attack, and bcrypt would
+just add latency to every request. (User-chosen *passwords* are the opposite case and
+do need a slow hash.)
+
+Revocation is immediate:
+
+```bash
+python scripts/manage_api_keys.py list
+python scripts/manage_api_keys.py revoke 3
+```
+
+Invalid and revoked keys return the same `401` so an attacker cannot learn whether a
+key was ever real.
+
+> **Dev escape hatch.** `AUTH_MODE=disabled` restores the old behaviour of trusting
+> `X-Tenant-Id`, for local work where minting keys is friction. The server prints a
+> warning on every startup in that mode. Do not use it anywhere reachable.
 
 ## Tech stack
 
@@ -89,11 +118,12 @@ changing `.env` alone.
 ├── index.html             # Single-file chat UI served at GET / (no build step)
 ├── requirements.txt
 ├── api/
-│   ├── deps.py            # resolve_tenant (X-Tenant-Id)
+│   ├── deps.py            # resolve_tenant — the single auth choke point
 │   ├── upload_files.py    # POST /documents (ingest), GET /documents (list)
 │   ├── conversations.py   # Conversation CRUD + history reconstruction
 │   └── chat.py            # POST /search, /chat, /chat/stream
 ├── core/
+│   ├── auth.py            # API key generation, hashing, header extraction
 │   ├── llm.py             # Chat model + shared OpenAI-compatible provider
 │   ├── embedding.py       # embed_query / embed_documents + dim validation
 │   ├── chunking.py        # Recursive character splitter
@@ -110,10 +140,12 @@ changing `.env` alone.
 │   └── dataset.json       # 20 documents, 36 questions with ground truth
 ├── scripts/
 │   ├── eval_retrieval.py  # recall@k / MRR, vector vs hybrid
+│   ├── manage_api_keys.py # create / list / revoke API keys
 │   ├── smoke_llm.py       # Verifies config → embedding → chat → tool calling
 │   ├── smoke_ingest.py    # Verifies upload → chunk → embed → store → isolation
 │   ├── smoke_chat.py      # Verifies search → cited answer → refusal → streaming
-│   └── smoke_conversation.py  # Verifies multi-turn history, isolation, cascade
+│   ├── smoke_conversation.py  # Verifies multi-turn history, isolation, cascade
+│   └── smoke_auth.py      # Verifies key auth, revocation, tenant spoofing
 ├── Dockerfile
 ├── docker-compose.yaml    # app + pgvector/pgvector:pg18
 └── .dockerignore
@@ -154,7 +186,8 @@ cp .env.example .env
 | `EMBEDDING_MODEL`    |    ✅    | Embedding model name                                      |
 | `EMBEDDING_DIM`      |          | Default `1024`; must match `VECTOR(n)` in `schema.sql`    |
 | `RETRIEVAL_MODE`     |          | `hybrid` (default) or `vector` — see [Retrieval](#retrieval) |
-| `DEFAULT_TENANT_ID`  |          | Tenant used when no `X-Tenant-Id` header is sent           |
+| `AUTH_MODE`          |          | `api_key` (default) or `disabled` — see above              |
+| `DEFAULT_TENANT_ID`  |          | Only used when `AUTH_MODE=disabled`                        |
 | `DATABASE_URL`       |          | PostgreSQL DSN                                            |
 
 **Key fallback rule.** The embedding key is inherited from `CHAT_API_KEY` *only*
@@ -267,12 +300,14 @@ to watch the same knowledge base become invisible.
 
 ```bash
 docker compose up -d db
+python scripts/manage_api_keys.py create --tenant demo   # copy the key
 uvicorn server:app --reload
-open http://localhost:8000
+open http://localhost:8000                               # paste the key in the sidebar
 ```
 
-The tenant field in the sidebar is the demo's point: change it and the documents and
-conversations vanish, because isolation happens in SQL, not in the UI.
+The key field in the sidebar is the demo's point: paste a different tenant's key and
+the documents and conversations vanish, because isolation happens in SQL and the
+tenant comes from the key — there is no client-supplied value to tamper with.
 
 ## API
 
@@ -283,7 +318,7 @@ synchronously and returns once everything is committed.
 
 ```bash
 curl -X POST http://localhost:8000/documents \
-  -H "X-Tenant-Id: acme" \
+  -H "Authorization: Bearer erag_…" \
   -F "file=@handbook.md" \
   -F "title=Employee Handbook"
 ```
@@ -315,7 +350,7 @@ no chunkable content · `422` invalid `chunk_size`/`overlap`.
 ### `GET /documents` — list
 
 ```bash
-curl http://localhost:8000/documents -H "X-Tenant-Id: acme"
+curl http://localhost:8000/documents -H "Authorization: Bearer erag_…"
 ```
 
 Returns that tenant's documents with a `chunk_count` each. Only ever returns rows
@@ -329,11 +364,11 @@ follow-up below resolves against the previous answer:
 
 ```bash
 # → {"answer": "…十四天…", "conversation_id": 7, "sources": [...]}
-curl -X POST localhost:8000/chat -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+curl -X POST localhost:8000/chat -H "Authorization: Bearer erag_…" -H "Content-Type: application/json" \
   -d '{"question": "特休有幾天?"}'
 
 # 「那滿三年之後呢?」 — no subject; only works because history is replayed
-curl -X POST localhost:8000/chat -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+curl -X POST localhost:8000/chat -H "Authorization: Bearer erag_…" -H "Content-Type: application/json" \
   -d '{"question": "那滿三年之後呢?", "conversation_id": 7}'
 ```
 
@@ -360,7 +395,7 @@ before blaming the model for a bad answer.
 
 ```bash
 curl -X POST http://localhost:8000/search \
-  -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer erag_…" -H "Content-Type: application/json" \
   -d '{"query": "how much can I claim for lodging?", "limit": 5}'
 ```
 
@@ -377,7 +412,7 @@ how the evaluation harness compares the two.
 
 ```bash
 curl -X POST http://localhost:8000/chat \
-  -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer erag_…" -H "Content-Type: application/json" \
   -d '{"question": "國內出差住宿費上限是多少?"}'
 ```
 
@@ -434,6 +469,18 @@ To try a smaller/faster model without editing `.env`:
 ```bash
 python scripts/smoke_llm.py --model qwen3:8b
 ```
+
+Then verify authentication:
+
+```bash
+python scripts/smoke_auth.py
+```
+
+Nine checks, including the one that matters most: a request carrying a valid key
+**plus** an `X-Tenant-Id` header naming a different tenant must not see that tenant's
+data. Also covers 401 shapes, `X-API-Key` as an alternative header, immediate
+revocation, `last_used_at` tracking, and that no plaintext key ever reaches the
+database.
 
 Then verify the ingest pipeline against a real database:
 
@@ -559,7 +606,7 @@ the search until the limit is met, and degrades gracefully on older pgvector.
 - [x] `POST /search`, `POST /chat`, and SSE streaming at `POST /chat/stream`
 - [x] Multi-turn conversations with persisted history and sources
 - [x] Single-file chat UI at `GET /` — streaming, citations, tenant switcher
-- [ ] Authentication in front of `resolve_tenant()`
+- [x] API-key authentication; tenant derived from the key, never from a header
 - [x] Retrieval evaluation harness (recall@k, MRR, split by question type)
 - [x] Hybrid retrieval: vector + trigram lexical, fused with RRF
 - [ ] A corpus large enough for the benchmark to discriminate above recall@1
@@ -576,9 +623,10 @@ the search until the limit is met, and degrades gracefully on older pgvector.
 - The `POSTGRES_PASSWORD: secret` in `docker-compose.yaml` and the matching DSN
   are **development defaults only**. Use a strong, secret-managed password and a
   hardened Postgres configuration in production.
-- Tenant isolation exists in the data model and is enforced by every function in
-  `database/func.py`, but **there is no authentication** — the `X-Tenant-Id` header
-  is taken at face value, so any caller can read any tenant. Put real auth in front
-  of `resolve_tenant()` before exposing this anywhere. Tracked in the Roadmap.
+- Authentication is API-key based; keys are stored only as SHA-256 hashes and the
+  tenant is derived from the key, never from a client-supplied header.
+- `AUTH_MODE=disabled` disables authentication entirely for local development. The
+  server warns loudly at startup. Never enable it on a reachable host.
+- There is no rate limiting and no request timeout yet — both are tracked below.
 - Uploads are capped at 2 MB and restricted to UTF-8 text; nothing is executed or
   rendered from uploaded content.

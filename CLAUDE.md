@@ -9,8 +9,8 @@ LLM endpoint** via pydantic-ai, for both chat and embeddings). **Usable end to
 end**: config, the LLM/embedding layer, chunking, the async DB layer, `tenant_id`
 isolation, ingest, query (`/search`, `/chat`, `/chat/stream`), multi-turn
 conversations, and a single-file chat UI at `GET /` are all implemented and verified
-by the four smoke scripts. **Still missing**: authentication, PDF/docx parsing,
-request timeouts, and schema migrations. See the
+by the four smoke scripts. **Still missing**: PDF/docx parsing, request
+timeouts, rate limiting, and schema migrations. See the
 Roadmap in `README.md` before assuming an endpoint exists.
 
 Currently verified against a self-hosted Ollama (`qwen3.8:27b` chat, `bge-m3`
@@ -50,6 +50,7 @@ only automated verification; all exit non-zero on failure:
 | `scripts/smoke_ingest.py` | upload → chunk → embed → store → isolation → errors | + DB |
 | `scripts/smoke_chat.py` | search → cited answer → refusal → SSE → validation | + DB |
 | `scripts/smoke_conversation.py` | multi-turn history, isolation, cascade | + DB |
+| `scripts/smoke_auth.py` | key auth, revocation, tenant spoofing, hashing | + DB |
 
 `scripts/eval_retrieval.py` is a benchmark, not a test — it ingests `eval/dataset.json`
 into its own tenant and reports recall@k / MRR for each retrieval mode. Run it after
@@ -89,7 +90,10 @@ Module roles:
   `max_distance`, and the `retrieved` list.
 - `core/agent.py` — builds the pydantic-ai `agent` with `deps_type=RagDeps` and the
   retrieval tool registered.
-- `api/deps.py` — `resolve_tenant()`, shared by every router.
+- `api/deps.py` — `resolve_tenant()`, the **single authentication choke point**. Every
+  router depends on it; nothing else should read tenant or auth headers.
+- `core/auth.py` — key generation (`secrets.token_urlsafe(32)`), SHA-256 hashing, and
+  header extraction (`Authorization: Bearer` or `X-API-Key`).
 - `api/upload_files.py` — `POST /documents` (ingest) and `GET /documents` (list).
 - `api/chat.py` — `POST /search` (no LLM), `POST /chat`, `POST /chat/stream` (SSE).
 - `api/conversations.py` — conversation CRUD plus `to_history()`, which rebuilds the
@@ -157,6 +161,19 @@ Module roles:
   would pin the DB schema to a library version, and replaying old tool calls and
   retrieved chunks into context costs tokens for no benefit. `MAX_HISTORY_MESSAGES`
   caps the replay at 20 messages.
+- **The tenant comes from the key, never from a header.** Under `AUTH_MODE=api_key`,
+  `X-Tenant-Id` is ignored completely. If a valid key could be paired with an arbitrary
+  tenant header, the key would authenticate the caller without constraining them and
+  the isolation would be decorative. `smoke_auth.py` asserts this exact attack fails —
+  do not "helpfully" re-add header support.
+- **Invalid and revoked keys must return the same 401.** Distinguishing them tells an
+  attacker whether a key was ever real.
+- **SHA-256 for keys is deliberate, not an oversight.** Keys carry 256 bits of
+  `secrets` entropy, so there is no dictionary to attack and a slow hash would only add
+  latency to every request. Passwords are the opposite case — if user-chosen secrets
+  are ever added, they need argon2/bcrypt.
+- **`AUTH_MODE=disabled` is a development-only escape hatch** that restores header
+  trust. `server.py` prints a warning on every startup in that mode; keep it.
 - **Cross-tenant access returns 404, never 403.** A 403 would confirm the resource
   exists. `require_conversation()` is the single choke point — use it for anything
   keyed by a conversation id.

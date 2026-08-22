@@ -19,6 +19,7 @@ import httpx  # noqa: E402
 from config import env_settings  # noqa: E402
 from database import db_shutdown, db_startup  # noqa: E402
 from database.conn import pool  # noqa: E402
+from scripts._smoke_auth import drop_keys, mint  # noqa: E402
 from server import app  # noqa: E402
 
 LINE = "─" * 62
@@ -64,6 +65,7 @@ async def check(name: str, title: str, fn):
 
 
 async def cleanup():
+    await drop_keys(TENANT_A, TENANT_B)
     async with pool.connection() as conn:
         await conn.execute(
             "DELETE FROM documents WHERE tenant_id = ANY(%s)", ([TENANT_A, TENANT_B],)
@@ -84,8 +86,8 @@ async def main() -> int:
     async with httpx.AsyncClient(
         transport=transport, base_url="http://test", timeout=600
     ) as client:
-        a = {"X-Tenant-Id": TENANT_A}
-        b = {"X-Tenant-Id": TENANT_B}
+        a = await mint(TENANT_A)
+        b = await mint(TENANT_B)
 
         async def t_setup():
             r = await client.post(

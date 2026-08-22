@@ -55,10 +55,17 @@ class EnvSettings(BaseSettings):
         default="postgresql://graytsao@localhost:5432/enterprise_rag",
     )
 
-    # 目前沒有身分驗證,租戶由 X-Tenant-Id header 帶入;沒帶就落到這個預設值
+    # api_key = 必須帶有效金鑰,租戶由金鑰決定(X-Tenant-Id 一律忽略)
+    # disabled = 開發模式,直接採信 X-Tenant-Id。不要用在任何對外環境。
+    AUTH_MODE: Literal["api_key", "disabled"] = Field(
+        default="api_key",
+        description="認證模式",
+    )
+
+    # 只在 AUTH_MODE=disabled 時有意義:X-Tenant-Id 未帶時的預設租戶
     DEFAULT_TENANT_ID: str = Field(
         default="default",
-        description="X-Tenant-Id 未帶時使用的租戶",
+        description="開發模式下 X-Tenant-Id 未帶時使用的租戶",
     )
 
     model_config = SettingsConfigDict(

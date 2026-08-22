@@ -20,6 +20,7 @@ from config import env_settings  # noqa: E402
 from database import db_shutdown, db_startup  # noqa: E402
 from database.conn import pool  # noqa: E402
 from database.func import search_chunks  # noqa: E402
+from scripts._smoke_auth import drop_keys, mint  # noqa: E402
 from server import app  # noqa: E402
 
 LINE = "─" * 62
@@ -96,16 +97,17 @@ async def check(name: str, title: str, fn):
 
 
 async def cleanup():
+    await drop_keys(TENANT_A, TENANT_B)
     async with pool.connection() as conn:
         await conn.execute(
             "DELETE FROM documents WHERE tenant_id = ANY(%s)", ([TENANT_A, TENANT_B],)
         )
 
 
-def upload(client: httpx.AsyncClient, tenant: str, name: str, body: str, **data):
+def upload(client: httpx.AsyncClient, hdr: dict, name: str, body: str, **data):
     return client.post(
         "/documents",
-        headers={"X-Tenant-Id": tenant},
+        headers=hdr,
         files={"file": (name, body.encode("utf-8"), "text/markdown")},
         data=data,
     )
@@ -124,11 +126,13 @@ async def main() -> int:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         state: dict = {}
+        HA = await mint(TENANT_A)
+        HB = await mint(TENANT_B)
 
         async def t_upload():
             # 順便驗 Form 參數:縮小 chunk_size 逼出多塊,批次寫入才真的被走到
             r = await upload(
-                client, TENANT_A, "理賠手冊.md", DOC_A, chunk_size=200, overlap=40
+                client, HA, "理賠手冊.md", DOC_A, chunk_size=200, overlap=40
             )
             if r.status_code != 201:
                 raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
@@ -152,28 +156,28 @@ async def main() -> int:
             return f"document_id={body['document_id']} chunks={body['chunks']} index 連續"
 
         async def t_upload_b():
-            r = await upload(client, TENANT_B, "出貨流程.md", DOC_B)
+            r = await upload(client, HB, "出貨流程.md", DOC_B)
             if r.status_code != 201:
                 raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
             return f"tenant B document_id={r.json()['document_id']}"
 
         async def t_replace():
-            r = await upload(client, TENANT_A, "理賠手冊.md", DOC_A + "\n補充條款。\n")
+            r = await upload(client, HA, "理賠手冊.md", DOC_A + "\n補充條款。\n")
             body = r.json()
             if not body["replaced"]:
                 raise RuntimeError("重複上傳同一 source 應該回 replaced=True")
             if body["document_id"] != state["doc_a"]:
                 raise RuntimeError("重複上傳不該產生新的 document_id")
             listing = (
-                await client.get("/documents", headers={"X-Tenant-Id": TENANT_A})
+                await client.get("/documents", headers=HA)
             ).json()
             if len(listing) != 1:
                 raise RuntimeError(f"同一 source 上傳兩次卻有 {len(listing)} 份文件")
             return f"覆蓋成功,仍是 1 份文件 / {listing[0]['chunk_count']} chunks"
 
         async def t_list_isolation():
-            a = (await client.get("/documents", headers={"X-Tenant-Id": TENANT_A})).json()
-            b = (await client.get("/documents", headers={"X-Tenant-Id": TENANT_B})).json()
+            a = (await client.get("/documents", headers=HA)).json()
+            b = (await client.get("/documents", headers=HB)).json()
             if {d["source"] for d in a} != {"理賠手冊.md"}:
                 raise RuntimeError(f"租戶 A 看到了不該看到的文件: {[d['source'] for d in a]}")
             if {d["source"] for d in b} != {"出貨流程.md"}:
@@ -208,20 +212,20 @@ async def main() -> int:
             return f"無門檻回 {len(loose)} 筆(最近 {loose[0][1]:.4f}),加門檻後正確擋掉"
 
         async def t_rejects():
-            bad_ext = await upload(client, TENANT_A, "報表.pdf", "x")
+            bad_ext = await upload(client, HA, "報表.pdf", "x")
             if bad_ext.status_code != 415:
                 raise RuntimeError(f"副檔名不符應回 415,實際 {bad_ext.status_code}")
             bad_utf8 = await client.post(
                 "/documents",
-                headers={"X-Tenant-Id": TENANT_A},
+                headers=HA,
                 files={"file": ("壞檔.txt", b"\xff\xfe\x00binary", "text/plain")},
             )
             if bad_utf8.status_code != 400:
                 raise RuntimeError(f"非 UTF-8 應回 400,實際 {bad_utf8.status_code}")
-            empty = await upload(client, TENANT_A, "空的.txt", "   \n\n  ")
+            empty = await upload(client, HA, "空的.txt", "   \n\n  ")
             if empty.status_code != 400:
                 raise RuntimeError(f"空內容應回 400,實際 {empty.status_code}")
-            bad_param = await upload(client, TENANT_A, "x.txt", "hello", overlap=9999)
+            bad_param = await upload(client, HA, "x.txt", "hello", overlap=9999)
             if bad_param.status_code != 422:
                 raise RuntimeError(f"overlap 超界應回 422,實際 {bad_param.status_code}")
             return "415 / 400 / 400 / 422 皆正確擋下"
