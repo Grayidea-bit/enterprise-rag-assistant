@@ -5,13 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 An enterprise RAG backend (FastAPI + PostgreSQL/pgvector + **any OpenAI-compatible
-LLM endpoint** via pydantic-ai, for both chat and embeddings). **The full RAG loop
-works**: config, the LLM/embedding layer, chunking, the async DB layer, `tenant_id`
-isolation, `POST /documents`, and the query side (`/search`, `/chat`,
-`/chat/stream`) are all implemented and verified by the three smoke scripts.
-**Still missing**: authentication, a UI (`GET /` is a placeholder), PDF/docx
-parsing, conversation history, and schema migrations. See the Roadmap in
-`README.md` before assuming an endpoint exists.
+LLM endpoint** via pydantic-ai, for both chat and embeddings). **Usable end to
+end**: config, the LLM/embedding layer, chunking, the async DB layer, `tenant_id`
+isolation, ingest, query (`/search`, `/chat`, `/chat/stream`), multi-turn
+conversations, and a single-file chat UI at `GET /` are all implemented and verified
+by the four smoke scripts. **Still missing**: authentication, PDF/docx parsing,
+retrieval-quality evaluation, request timeouts, and schema migrations. See the
+Roadmap in `README.md` before assuming an endpoint exists.
 
 Currently verified against a self-hosted Ollama (`qwen3.8:27b` chat, `bge-m3`
 embeddings). Provider choice is entirely an `.env` concern — no code knows or cares
@@ -49,6 +49,7 @@ only automated verification; all exit non-zero on failure:
 | `scripts/smoke_llm.py` | config → embedding → chat → tool calling | LLM endpoint |
 | `scripts/smoke_ingest.py` | upload → chunk → embed → store → isolation → errors | + DB |
 | `scripts/smoke_chat.py` | search → cited answer → refusal → SSE → validation | + DB |
+| `scripts/smoke_conversation.py` | multi-turn history, isolation, cascade | + DB |
 
 Run the relevant one after touching `core/`, `config.py`, `database/`, or `api/`.
 
@@ -86,6 +87,11 @@ Module roles:
 - `api/deps.py` — `resolve_tenant()`, shared by every router.
 - `api/upload_files.py` — `POST /documents` (ingest) and `GET /documents` (list).
 - `api/chat.py` — `POST /search` (no LLM), `POST /chat`, `POST /chat/stream` (SSE).
+- `api/conversations.py` — conversation CRUD plus `to_history()`, which rebuilds the
+  model's `message_history` from stored turns.
+- `index.html` — the whole UI: vanilla HTML/CSS/JS in one file, no build step. It
+  parses SSE by hand from `fetch().body.getReader()` because `EventSource` is
+  GET-only.
 - `database/conn.py` — `psycopg_pool.AsyncConnectionPool` with
   `configure=register_vector_async`. Created with `open=False`.
 - `database/__init__.py` — `db_startup()` / `db_shutdown()` are **async**; awaited
@@ -138,6 +144,19 @@ Module roles:
 - **First calls can be slow.** Self-hosted servers load models on demand; one cold
   start measured ~3 minutes, while warm calls to a 27B returned in ~8s. The eventual
   chat endpoint will need streaming and generous timeouts.
+- **Conversations store text turns, not pydantic-ai message objects.** `messages`
+  holds plain `user`/`assistant` rows, and `to_history()` rebuilds `ModelRequest` /
+  `ModelResponse` from them. Two reasons: pydantic-ai's message format is internal and
+  would pin the DB schema to a library version, and replaying old tool calls and
+  retrieved chunks into context costs tokens for no benefit. `MAX_HISTORY_MESSAGES`
+  caps the replay at 20 messages.
+- **Cross-tenant access returns 404, never 403.** A 403 would confirm the resource
+  exists. `require_conversation()` is the single choke point — use it for anything
+  keyed by a conversation id.
+- **`_prepare()` runs before the SSE generator starts.** `/chat/stream` resolves and
+  validates the conversation *outside* the streaming response so a bad
+  `conversation_id` can still return a real 404; once the generator yields, the status
+  code is fixed and errors can only be reported as an SSE `error` event.
 - **`RagDeps.retrieved` is a deliberate side channel.** A tool's return value goes to
   the *model*; the HTTP caller also needs to know which chunks were cited, so
   `search_knowledge_base` appends its hits to `ctx.deps.retrieved` and the endpoint

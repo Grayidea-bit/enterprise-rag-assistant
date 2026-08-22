@@ -160,8 +160,10 @@ async def main() -> int:
             kinds = [n for n, _ in events]
             if "error" in kinds:
                 raise RuntimeError(f"串流回報錯誤: {dict(events)['error']}")
-            if not kinds or kinds[0] != "sources":
-                raise RuntimeError(f"第一個事件應該是 sources,實際 {kinds[:3]}")
+            if kinds[:2] != ["conversation", "sources"]:
+                raise RuntimeError(
+                    f"事件應以 conversation、sources 開頭,實際 {kinds[:3]}"
+                )
             if kinds[-1] != "done":
                 raise RuntimeError(f"最後一個事件應該是 done,實際 {kinds[-3:]}")
             deltas = [p["text"] for n, p in events if n == "delta"]

@@ -171,3 +171,140 @@ async def list_documents(tenant_id: str, limit: int = 50) -> list[dict[str, Any]
         }
         for r in rows
     ]
+
+
+# ── 對話 ────────────────────────────────────────────────────────
+
+
+async def create_conversation(tenant_id: str, title: str | None = None) -> int:
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                "INSERT INTO conversations (tenant_id, title) VALUES (%s, %s) RETURNING id",
+                (tenant_id, title),
+            )
+        ).fetchone()
+        if not row:
+            raise RuntimeError("Create conversation failed")
+        return row[0]
+
+
+async def conversation_exists(tenant_id: str, conversation_id: int) -> bool:
+    """順便當成租戶授權檢查:別的租戶的 conversation 一律視為不存在。"""
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT 1 FROM conversations WHERE id = %s AND tenant_id = %s",
+                (conversation_id, tenant_id),
+            )
+        ).fetchone()
+        return row is not None
+
+
+async def list_conversations(tenant_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    async with pool.connection() as conn:
+        rows = await (
+            await conn.execute(
+                """
+                SELECT c.id, c.title, c.created_at, c.updated_at, COUNT(m.id)
+                FROM conversations c
+                LEFT JOIN messages m ON m.conversation_id = c.id
+                WHERE c.tenant_id = %s
+                GROUP BY c.id
+                ORDER BY c.updated_at DESC
+                LIMIT %s
+                """,
+                (tenant_id, limit),
+            )
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "title": r[1],
+            "created_at": r[2],
+            "updated_at": r[3],
+            "message_count": r[4],
+        }
+        for r in rows
+    ]
+
+
+async def list_messages(
+    tenant_id: str, conversation_id: int, limit: int = 200
+) -> list[dict[str, Any]]:
+    async with pool.connection() as conn:
+        rows = await (
+            await conn.execute(
+                """
+                SELECT id, role, content, sources, created_at
+                FROM messages
+                WHERE tenant_id = %s AND conversation_id = %s
+                ORDER BY id
+                LIMIT %s
+                """,
+                (tenant_id, conversation_id, limit),
+            )
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "role": r[1],
+            "content": r[2],
+            "sources": r[3] or [],
+            "created_at": r[4],
+        }
+        for r in rows
+    ]
+
+
+async def append_message(
+    tenant_id: str,
+    conversation_id: int,
+    role: str,
+    content: str,
+    sources: list[dict[str, Any]] | None = None,
+) -> int:
+    """寫入一則訊息並更新對話的 updated_at(讓列表照最近使用排序)。"""
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                """
+                INSERT INTO messages (conversation_id, tenant_id, role, content, sources)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    conversation_id,
+                    tenant_id,
+                    role,
+                    content,
+                    Jsonb(sources) if sources else None,
+                ),
+            )
+        ).fetchone()
+        await conn.execute(
+            "UPDATE conversations SET updated_at = now() WHERE id = %s AND tenant_id = %s",
+            (conversation_id, tenant_id),
+        )
+        if not row:
+            raise RuntimeError("Append message failed")
+        return row[0]
+
+
+async def set_conversation_title(
+    tenant_id: str, conversation_id: int, title: str
+) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE conversations SET title = %s WHERE id = %s AND tenant_id = %s AND title IS NULL",
+            (title, conversation_id, tenant_id),
+        )
+
+
+async def delete_conversation(tenant_id: str, conversation_id: int) -> bool:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "DELETE FROM conversations WHERE id = %s AND tenant_id = %s",
+            (conversation_id, tenant_id),
+        )
+        return cur.rowcount > 0

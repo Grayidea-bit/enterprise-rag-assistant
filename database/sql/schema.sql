@@ -40,3 +40,31 @@ CREATE INDEX IF NOT EXISTS idx_chunks_tenant
 -- CASCADE 刪除與依序取回 chunk 都會用到
 CREATE INDEX IF NOT EXISTS idx_chunks_document
     ON chunks (document_id, chunk_index);
+
+-- 對話層級:一個 conversation 就是一串問答
+CREATE TABLE IF NOT EXISTS conversations (
+    id          BIGSERIAL PRIMARY KEY,
+    tenant_id   TEXT NOT NULL,
+    title       TEXT,
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    updated_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_tenant
+    ON conversations (tenant_id, updated_at DESC);
+
+-- 訊息層級:刻意存成 user / assistant 的文字回合,而不是 pydantic-ai 的內部訊息格式。
+-- 那個格式是函式庫內部結構,存進 DB 等於把 schema 綁在函式庫版本上;
+-- 而且把舊的工具呼叫與檢索結果原封不動塞回 context 只是在燒 token。
+CREATE TABLE IF NOT EXISTS messages (
+    id              BIGSERIAL PRIMARY KEY,
+    conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    tenant_id       TEXT NOT NULL,
+    role            TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content         TEXT NOT NULL,
+    sources         JSONB,          -- assistant 訊息才有,存當時引用的來源
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conversation
+    ON messages (conversation_id, id);

@@ -10,11 +10,12 @@ through the OpenAI-compatible interface, and the endpoint, key, and model names
 all live in `.env`. Switching between a self-hosted Ollama, NVIDIA NIM, vLLM, or
 OpenAI itself is a one-file change — no code edits.
 
-> **Status: the RAG loop works end to end.** Ingest (upload → chunk → embed → store)
-> and query (retrieve → cite → answer, with SSE streaming) are both implemented and
-> verified by three smoke tests, with per-tenant isolation enforced in the data
-> layer. What's still missing: **authentication**, a **UI**, PDF/docx parsing, and
-> schema migrations. See the [Roadmap](#roadmap).
+> **Status: usable end to end, with a UI.** Ingest (upload → chunk → embed → store),
+> query (retrieve → cite → answer, streamed), multi-turn conversations, and a chat
+> interface at `GET /` are all implemented and verified by four smoke tests, with
+> per-tenant isolation enforced in the data layer. What's still missing:
+> **authentication**, PDF/docx parsing, retrieval-quality evaluation, and schema
+> migrations. See the [Roadmap](#roadmap).
 
 ---
 
@@ -34,6 +35,8 @@ Query phase
 Both phases are implemented: `POST /documents` runs the ingest chain, and
 `POST /chat` runs the query chain — the agent decides when to call the retrieval
 tool, and the endpoint returns the answer alongside the chunks it actually cited.
+Turns are persisted, so follow-up questions ("and after three years?") resolve
+against the earlier context.
 
 - [`core/llm.py`](core/llm.py) — chat model over any OpenAI-compatible endpoint
 - [`core/embedding.py`](core/embedding.py) — `embed_query()` / `embed_documents()`,
@@ -83,11 +86,12 @@ changing `.env` alone.
 ├── config.py              # EnvSettings (.env) + AppConfig (system.yaml)
 ├── system.yaml            # Agent system prompt (app settings only)
 ├── .env.example           # Copy to .env and fill in
-├── index.html             # Placeholder page served at GET /
+├── index.html             # Single-file chat UI served at GET / (no build step)
 ├── requirements.txt
 ├── api/
 │   ├── deps.py            # resolve_tenant (X-Tenant-Id)
 │   ├── upload_files.py    # POST /documents (ingest), GET /documents (list)
+│   ├── conversations.py   # Conversation CRUD + history reconstruction
 │   └── chat.py            # POST /search, /chat, /chat/stream
 ├── core/
 │   ├── llm.py             # Chat model + shared OpenAI-compatible provider
@@ -105,7 +109,8 @@ changing `.env` alone.
 ├── scripts/
 │   ├── smoke_llm.py       # Verifies config → embedding → chat → tool calling
 │   ├── smoke_ingest.py    # Verifies upload → chunk → embed → store → isolation
-│   └── smoke_chat.py      # Verifies search → cited answer → refusal → streaming
+│   ├── smoke_chat.py      # Verifies search → cited answer → refusal → streaming
+│   └── smoke_conversation.py  # Verifies multi-turn history, isolation, cascade
 ├── Dockerfile
 ├── docker-compose.yaml    # app + pgvector/pgvector:pg18
 └── .dockerignore
@@ -187,6 +192,22 @@ EMBEDDING_DIM=1024
 | -------- | ----------------------- |
 | `prompt` | The agent system prompt |
 
+## The chat UI
+
+`GET /` serves a single-file interface — no build step, no npm, no framework. It
+covers the whole demo loop: upload a document, ask about it, watch the answer stream
+in with inline `[n]` citations and expandable source cards, and flip the tenant field
+to watch the same knowledge base become invisible.
+
+```bash
+docker compose up -d db
+uvicorn server:app --reload
+open http://localhost:8000
+```
+
+The tenant field in the sidebar is the demo's point: change it and the documents and
+conversations vanish, because isolation happens in SQL, not in the UI.
+
 ## API
 
 ### `POST /documents` — ingest
@@ -233,6 +254,38 @@ curl http://localhost:8000/documents -H "X-Tenant-Id: acme"
 
 Returns that tenant's documents with a `chunk_count` each. Only ever returns rows
 matching the header's tenant.
+
+### Conversations
+
+`POST /chat` accepts an optional `conversation_id` and always returns one. Omit it to
+start a new conversation; pass it back to continue. Every turn is persisted, so the
+follow-up below resolves against the previous answer:
+
+```bash
+# → {"answer": "…十四天…", "conversation_id": 7, "sources": [...]}
+curl -X POST localhost:8000/chat -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+  -d '{"question": "特休有幾天?"}'
+
+# 「那滿三年之後呢?」 — no subject; only works because history is replayed
+curl -X POST localhost:8000/chat -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+  -d '{"question": "那滿三年之後呢?", "conversation_id": 7}'
+```
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /conversations` | Create an empty conversation |
+| `GET /conversations` | List this tenant's conversations, most recent first |
+| `GET /conversations/{id}` | Full message history, with stored sources |
+| `DELETE /conversations/{id}` | Delete it; messages go with it via `ON DELETE CASCADE` |
+
+Only the last 20 messages are replayed to the model (`MAX_HISTORY_MESSAGES`) so
+context can't grow without bound. Conversations belonging to another tenant return
+**404, not 403** — a 403 would confirm the conversation exists.
+
+> **What is stored is user/assistant text turns, not pydantic-ai's internal message
+> objects.** That format is library-internal, so persisting it would pin the database
+> schema to a library version; and replaying old tool calls and retrieved chunks into
+> context just burns tokens without helping the model.
 
 ### `POST /search` — retrieval only
 
@@ -333,6 +386,17 @@ Six checks: retrieval ordering and tenant scoping, a cited answer that quotes a 
 figure from the document, a **refusal** from a tenant with no documents, the SSE
 event sequence, and request validation.
 
+And the conversation layer:
+
+```bash
+python scripts/smoke_conversation.py
+```
+
+Seven checks, the important one being a **subjectless follow-up** ("那滿三年之後呢?")
+that can only be answered correctly if history is actually being replayed. Also
+covers persistence of sources and titles, cross-tenant 404s on read/continue/delete,
+streamed turns reaching the database, and `ON DELETE CASCADE`.
+
 > **The first call can be slow.** A self-hosted server loads the model into memory
 > on demand; one cold start was measured at ~3 minutes, while warm calls to a 27B
 > model returned in ~8 seconds. Budget generous timeouts, but don't assume every
@@ -421,11 +485,13 @@ the search until the limit is met, and degrades gracefully on older pgvector.
 - [x] Smoke tests for both the LLM layer and the ingest pipeline
 - [x] Agent retrieval tool wired into the pydantic-ai `Agent`
 - [x] `POST /search`, `POST /chat`, and SSE streaming at `POST /chat/stream`
+- [x] Multi-turn conversations with persisted history and sources
+- [x] Single-file chat UI at `GET /` — streaming, citations, tenant switcher
 - [ ] Authentication in front of `resolve_tenant()`
-- [ ] Conversation history (each `/chat` call is currently stateless)
+- [ ] Retrieval-quality evaluation (recall@k), hybrid BM25 + vector search, reranking
+- [ ] Timeouts and `UsageLimits` on `/chat`
 - [ ] PDF / docx parsing (currently plain text and Markdown only)
 - [ ] Schema migrations (`schema.sql` only runs on a fresh volume)
-- [ ] Real chat UI in `index.html` (currently a placeholder)
 
 ## Security notes
 
