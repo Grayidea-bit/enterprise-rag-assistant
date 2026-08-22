@@ -7,10 +7,10 @@ ingest 流程:上傳 → 解碼 → 切塊 → embed → 寫入 pgvector。
 from datetime import datetime
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from config import env_settings
+from api.deps import resolve_tenant
 from core.chunking import DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP, split_text
 from core.embedding import embed_documents
 from database.func import (
@@ -25,18 +25,6 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 # 這一刀只做純文字;PDF / docx 之後當成獨立的 parser 加進來
 ALLOWED_SUFFIXES = {".txt", ".md", ".markdown", ".text"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
-
-
-def resolve_tenant(x_tenant_id: str | None = Header(default=None)) -> str:
-    """租戶來自 X-Tenant-Id header。
-
-    注意這裡沒有任何身分驗證 —— 隔離的是資料模型與檢索路徑,不是身分。
-    要正式對外服務必須在這層之前補上認證。
-    """
-    tenant_id = (x_tenant_id or env_settings.DEFAULT_TENANT_ID).strip()
-    if not tenant_id:
-        raise HTTPException(status_code=400, detail="X-Tenant-Id 不能是空字串")
-    return tenant_id
 
 
 class IngestResponse(BaseModel):

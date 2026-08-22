@@ -10,11 +10,11 @@ through the OpenAI-compatible interface, and the endpoint, key, and model names
 all live in `.env`. Switching between a self-hosted Ollama, NVIDIA NIM, vLLM, or
 OpenAI itself is a one-file change — no code edits.
 
-> **Status: work in progress.** The ingest half of the pipeline is complete and
-> verified end-to-end: upload → chunk → embed → store in pgvector, with per-tenant
-> isolation enforced in the data layer. The **query half** — the agent's retrieval
-> tool and a chat endpoint — is **not implemented yet**, and there is no UI. See the
-> [Roadmap](#roadmap).
+> **Status: the RAG loop works end to end.** Ingest (upload → chunk → embed → store)
+> and query (retrieve → cite → answer, with SSE streaming) are both implemented and
+> verified by three smoke tests, with per-tenant isolation enforced in the data
+> layer. What's still missing: **authentication**, a **UI**, PDF/docx parsing, and
+> schema migrations. See the [Roadmap](#roadmap).
 
 ---
 
@@ -31,16 +31,19 @@ Query phase
             ──► top-k chunks ──► chat model (pydantic-ai Agent) ──► answer
 ```
 
-**The ingest phase is done** — `POST /documents` runs the whole chain. What's
-missing is the query phase: `search_chunks()` exists and is tested, but nothing
-calls it yet from an agent tool or a chat endpoint.
+Both phases are implemented: `POST /documents` runs the ingest chain, and
+`POST /chat` runs the query chain — the agent decides when to call the retrieval
+tool, and the endpoint returns the answer alongside the chunks it actually cited.
 
 - [`core/llm.py`](core/llm.py) — chat model over any OpenAI-compatible endpoint
 - [`core/embedding.py`](core/embedding.py) — `embed_query()` / `embed_documents()`,
   sharing the same provider abstraction, with runtime dimension validation
 - [`core/chunking.py`](core/chunking.py) — recursive character splitter, no tokenizer
   dependency
-- [`api/upload_files.py`](api/upload_files.py) — the ingest endpoint
+- [`core/tools.py`](core/tools.py) — `search_knowledge_base`, the agent's retrieval
+  tool, plus the request-scoped `RagDeps`
+- [`api/upload_files.py`](api/upload_files.py) — the ingest endpoints
+- [`api/chat.py`](api/chat.py) — search, chat, and SSE streaming endpoints
 - [`database/func.py`](database/func.py) — async, tenant-scoped: `upsert_document`,
   `insert_chunks`, `delete_chunks`, `search_chunks`, `list_documents`
 
@@ -83,12 +86,15 @@ changing `.env` alone.
 ├── index.html             # Placeholder page served at GET /
 ├── requirements.txt
 ├── api/
-│   └── upload_files.py    # POST /documents (ingest), GET /documents (list)
+│   ├── deps.py            # resolve_tenant (X-Tenant-Id)
+│   ├── upload_files.py    # POST /documents (ingest), GET /documents (list)
+│   └── chat.py            # POST /search, /chat, /chat/stream
 ├── core/
 │   ├── llm.py             # Chat model + shared OpenAI-compatible provider
 │   ├── embedding.py       # embed_query / embed_documents + dim validation
 │   ├── chunking.py        # Recursive character splitter
-│   └── agent.py           # pydantic-ai Agent (tools list currently empty)
+│   ├── tools.py           # search_knowledge_base tool + RagDeps
+│   └── agent.py           # pydantic-ai Agent wired to the retrieval tool
 ├── database/
 │   ├── __init__.py        # db_startup() / db_shutdown()
 │   ├── conn.py            # pgvector-aware async connection pool
@@ -98,7 +104,8 @@ changing `.env` alone.
 │       └── reset.sql      # drops tables (dev only)
 ├── scripts/
 │   ├── smoke_llm.py       # Verifies config → embedding → chat → tool calling
-│   └── smoke_ingest.py    # Verifies upload → chunk → embed → store → isolation
+│   ├── smoke_ingest.py    # Verifies upload → chunk → embed → store → isolation
+│   └── smoke_chat.py      # Verifies search → cited answer → refusal → streaming
 ├── Dockerfile
 ├── docker-compose.yaml    # app + pgvector/pgvector:pg18
 └── .dockerignore
@@ -227,6 +234,61 @@ curl http://localhost:8000/documents -H "X-Tenant-Id: acme"
 Returns that tenant's documents with a `chunk_count` each. Only ever returns rows
 matching the header's tenant.
 
+### `POST /search` — retrieval only
+
+Vector search with no LLM involved. Useful for judging retrieval quality on its own,
+before blaming the model for a bad answer.
+
+```bash
+curl -X POST http://localhost:8000/search \
+  -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+  -d '{"query": "how much can I claim for lodging?", "limit": 5}'
+```
+
+`limit` is 1–50 (default 5). `max_distance` optionally drops hits above a cosine
+distance — without it you always get `limit` rows back, however irrelevant.
+
+### `POST /chat` — retrieval-augmented answer
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "X-Tenant-Id: acme" -H "Content-Type: application/json" \
+  -d '{"question": "國內出差住宿費上限是多少?"}'
+```
+
+```json
+{
+  "answer": "根據差旅費用報支規定，國內出差住宿費核實報支，上限為新臺幣 2,800 元[1]。",
+  "sources": [{"source": "差旅規定.md", "title": "…", "distance": 0.36, "excerpt": "…"}]
+}
+```
+
+The agent decides when to call `search_knowledge_base`; `sources` reports the chunks
+it actually retrieved, deduplicated and sorted by distance. An empty `sources` array
+means the tool was never called — worth noticing, because it means the answer came
+from the model's own knowledge rather than your documents.
+
+When retrieval comes back empty the system prompt requires the model to say so
+rather than improvise. This is covered by a smoke test that asks a tenant with no
+documents and asserts a refusal.
+
+### `POST /chat/stream` — same, as SSE
+
+Same request body. Emits `sources` first (retrieval finishes before the model starts
+writing), then a series of `delta` events, then `done`. Failures after the stream has
+opened arrive as an `error` event, since the HTTP status is already sent.
+
+```
+event: sources
+data: {"sources": [...]}
+
+event: delta
+data: {"text": "根據差旅"}
+
+event: done
+data: {}
+```
+
 ## Verifying your setup
 
 Before wiring anything else up, confirm the endpoint actually works:
@@ -260,6 +322,16 @@ It uploads documents for two tenants and checks seven things: multi-chunk ingest
 with contiguous `chunk_index`, upsert-on-reupload, tenant isolation in both the
 listing and the vector search, the `max_distance` threshold rejecting irrelevant
 hits, and the four error paths. It cleans up its own test data.
+
+Finally, verify the query half:
+
+```bash
+python scripts/smoke_chat.py
+```
+
+Six checks: retrieval ordering and tenant scoping, a cited answer that quotes a real
+figure from the document, a **refusal** from a tenant with no documents, the SSE
+event sequence, and request validation.
 
 > **The first call can be slow.** A self-hosted server loads the model into memory
 > on demand; one cold start was measured at ~3 minutes, while warm calls to a 27B
@@ -347,9 +419,10 @@ the search until the limit is met, and degrades gracefully on older pgvector.
 - [x] `POST /documents` ingest endpoint (upload → chunk → embed → store)
 - [x] Async DB layer (`AsyncConnectionPool`) so slow LLM calls don't block
 - [x] Smoke tests for both the LLM layer and the ingest pipeline
-- [ ] Agent retrieval tool wired into the pydantic-ai `Agent` (`tools` is empty)
-- [ ] Chat / query endpoint (embed → vector search → answer), streaming
+- [x] Agent retrieval tool wired into the pydantic-ai `Agent`
+- [x] `POST /search`, `POST /chat`, and SSE streaming at `POST /chat/stream`
 - [ ] Authentication in front of `resolve_tenant()`
+- [ ] Conversation history (each `/chat` call is currently stateless)
 - [ ] PDF / docx parsing (currently plain text and Markdown only)
 - [ ] Schema migrations (`schema.sql` only runs on a fresh volume)
 - [ ] Real chat UI in `index.html` (currently a placeholder)

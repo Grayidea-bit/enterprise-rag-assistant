@@ -5,12 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 An enterprise RAG backend (FastAPI + PostgreSQL/pgvector + **any OpenAI-compatible
-LLM endpoint** via pydantic-ai, for both chat and embeddings). **The ingest half is
-done**: config, the LLM/embedding layer, chunking, the async DB layer, `tenant_id`
-isolation, and `POST /documents` all work and are verified by
-`scripts/smoke_llm.py` + `scripts/smoke_ingest.py`. **The query half is not**: the
-agent's `tools` list is still empty, there is no chat/search endpoint, and no UI.
-See the Roadmap in `README.md` before assuming an endpoint exists.
+LLM endpoint** via pydantic-ai, for both chat and embeddings). **The full RAG loop
+works**: config, the LLM/embedding layer, chunking, the async DB layer, `tenant_id`
+isolation, `POST /documents`, and the query side (`/search`, `/chat`,
+`/chat/stream`) are all implemented and verified by the three smoke scripts.
+**Still missing**: authentication, a UI (`GET /` is a placeholder), PDF/docx
+parsing, conversation history, and schema migrations. See the Roadmap in
+`README.md` before assuming an endpoint exists.
 
 Currently verified against a self-hosted Ollama (`qwen3.8:27b` chat, `bge-m3`
 embeddings). Provider choice is entirely an `.env` concern — no code knows or cares
@@ -40,20 +41,24 @@ docker compose up --build                         # reads ${...} from .env
 python scripts/smoke_llm.py --model qwen3:8b
 ```
 
-No test suite, linter, or formatter is configured yet. The two smoke scripts are the
-only automated verification and both exit non-zero on failure:
-`scripts/smoke_llm.py` (config → embedding → chat → tool calling) and
-`scripts/smoke_ingest.py` (upload → chunk → embed → store → tenant isolation →
-error paths; needs a live DB). Run the relevant one after touching `core/`,
-`config.py`, `database/`, or `api/`.
+No test suite, linter, or formatter is configured yet. Three smoke scripts are the
+only automated verification; all exit non-zero on failure:
+
+| Script | Covers | Needs |
+| --- | --- | --- |
+| `scripts/smoke_llm.py` | config → embedding → chat → tool calling | LLM endpoint |
+| `scripts/smoke_ingest.py` | upload → chunk → embed → store → isolation → errors | + DB |
+| `scripts/smoke_chat.py` | search → cited answer → refusal → SSE → validation | + DB |
+
+Run the relevant one after touching `core/`, `config.py`, `database/`, or `api/`.
 
 ## Architecture
 
-Two-phase RAG. Ingest: `document → chunk → embed (1024-dim) → store (pgvector)` —
-**implemented**, driven by `POST /documents`. Query: `question → embed → vector
-search (HNSW, cosine) → top-k chunks → agent → answer` — `search_chunks()` exists
-and is tested, but **nothing calls it yet**; wiring it into `core/agent.py`'s empty
-`tools` list is the next slice.
+Two-phase RAG, both halves implemented. Ingest: `document → chunk → embed (1024-dim)
+→ store (pgvector)` via `POST /documents`. Query: the agent calls
+`search_knowledge_base` (`core/tools.py`), which embeds the query and runs
+`search_chunks()`; `POST /chat` returns the answer plus the chunks that were actually
+retrieved.
 
 Every `database/func.py` function takes `tenant_id` as its first argument — that is
 where tenant isolation is enforced. The tenant comes from the `X-Tenant-Id` header
@@ -73,10 +78,14 @@ Module roles:
   which validate the returned dimension against `EMBEDDING_DIM`.
 - `core/chunking.py` — `split_text()`, a recursive character splitter (paragraph →
   line → sentence → space → hard cut). Deliberately no tokenizer dependency.
-- `core/agent.py` — builds the pydantic-ai `agent`. `tools = []` is currently empty;
-  retrieval tools go here.
-- `api/upload_files.py` — `POST /documents` (ingest) and `GET /documents` (list),
-  plus `resolve_tenant()`.
+- `core/tools.py` — `search_knowledge_base` (the agent's retrieval tool) and
+  `RagDeps`, the per-request dependency object carrying `tenant_id`, `limit`,
+  `max_distance`, and the `retrieved` list.
+- `core/agent.py` — builds the pydantic-ai `agent` with `deps_type=RagDeps` and the
+  retrieval tool registered.
+- `api/deps.py` — `resolve_tenant()`, shared by every router.
+- `api/upload_files.py` — `POST /documents` (ingest) and `GET /documents` (list).
+- `api/chat.py` — `POST /search` (no LLM), `POST /chat`, `POST /chat/stream` (SSE).
 - `database/conn.py` — `psycopg_pool.AsyncConnectionPool` with
   `configure=register_vector_async`. Created with `open=False`.
 - `database/__init__.py` — `db_startup()` / `db_shutdown()` are **async**; awaited
@@ -129,6 +138,21 @@ Module roles:
 - **First calls can be slow.** Self-hosted servers load models on demand; one cold
   start measured ~3 minutes, while warm calls to a 27B returned in ~8s. The eventual
   chat endpoint will need streaming and generous timeouts.
+- **`RagDeps.retrieved` is a deliberate side channel.** A tool's return value goes to
+  the *model*; the HTTP caller also needs to know which chunks were cited, so
+  `search_knowledge_base` appends its hits to `ctx.deps.retrieved` and the endpoint
+  reads them afterwards. `unique_sources()` dedupes because the model often searches
+  several times with reworded queries. An empty `sources` in a `/chat` response means
+  the tool was never called — the answer came from the model's own knowledge.
+- **The system prompt is load-bearing.** `system.yaml` explicitly orders the model to
+  call `search_knowledge_base` before answering and to say "找不到相關資料" when
+  retrieval is empty. Weaken that text and the model starts answering from memory,
+  which is exactly the failure a RAG system exists to prevent. `smoke_chat.py` guards
+  this by asking a tenant with no documents and asserting a refusal.
+- **In `/chat/stream`, `sources` is emitted before any `delta`.** By the time
+  `run_stream()` yields, tool calls have already completed, so `deps.retrieved` is
+  populated. Errors raised after the response has started can only be reported as an
+  SSE `error` event — the status code is long gone.
 - **A plain `list[float]` is not a vector.** psycopg adapts it to
   `double precision[]`. That silently *works* on `INSERT` (PostgreSQL applies an
   assignment cast to the `VECTOR(1024)` column) but **fails on `<=>`**, which has no

@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
-from api import documents_router
+from api import chat_router, documents_router
 from database import db_shutdown, db_startup
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(documents_router)
+app.include_router(chat_router)
 
 
 @app.get("/")
