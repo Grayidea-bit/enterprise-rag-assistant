@@ -5,12 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 An enterprise RAG backend (FastAPI + PostgreSQL/pgvector + **any OpenAI-compatible
-LLM endpoint** via pydantic-ai, for both chat and embeddings). **Early-stage
-skeleton**: config, the LLM/embedding layer, DB layer, vector schema, and Docker
-are done and verified by `scripts/smoke_llm.py`. The HTTP API (ingest/chat/search),
-chunking, the agent's retrieval tools, `tenant_id`, and the chat UI are **not
-implemented** — `GET /` only serves a placeholder `index.html`. See the Roadmap in
-`README.md` before assuming an endpoint exists.
+LLM endpoint** via pydantic-ai, for both chat and embeddings). **The ingest half is
+done**: config, the LLM/embedding layer, chunking, the async DB layer, `tenant_id`
+isolation, and `POST /documents` all work and are verified by
+`scripts/smoke_llm.py` + `scripts/smoke_ingest.py`. **The query half is not**: the
+agent's `tools` list is still empty, there is no chat/search endpoint, and no UI.
+See the Roadmap in `README.md` before assuming an endpoint exists.
 
 Currently verified against a self-hosted Ollama (`qwen3.8:27b` chat, `bge-m3`
 embeddings). Provider choice is entirely an `.env` concern — no code knows or cares
@@ -24,9 +24,12 @@ python3.13 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env                              # then fill it in
 python scripts/smoke_llm.py                       # verify the LLM endpoint first
-createdb enterprise_rag
-psql enterprise_rag -f database/sql/schema.sql   # apply schema
+docker compose up -d db                           # DB on localhost:5433 (not 5432)
 uvicorn server:app --reload                       # run on :8000
+
+# Verify the whole ingest pipeline against a real DB
+DATABASE_URL=postgresql://postgres:secret@localhost:5433/enterprise_rag \
+    python scripts/smoke_ingest.py
 
 psql enterprise_rag -f database/sql/reset.sql     # drop tables (dev only)
 
@@ -37,17 +40,26 @@ docker compose up --build                         # reads ${...} from .env
 python scripts/smoke_llm.py --model qwen3:8b
 ```
 
-No test suite, linter, or formatter is configured yet. `scripts/smoke_llm.py` is
-the only automated verification: it checks config → embedding → chat → tool calling
-and exits non-zero on failure. Run it after touching anything in `core/` or `config.py`.
+No test suite, linter, or formatter is configured yet. The two smoke scripts are the
+only automated verification and both exit non-zero on failure:
+`scripts/smoke_llm.py` (config → embedding → chat → tool calling) and
+`scripts/smoke_ingest.py` (upload → chunk → embed → store → tenant isolation →
+error paths; needs a live DB). Run the relevant one after touching `core/`,
+`config.py`, `database/`, or `api/`.
 
 ## Architecture
 
-Two-phase RAG. Ingest: `document → chunk → embed (1024-dim) → store (pgvector)`.
-Query: `question → embed → vector search (HNSW, cosine) → top-k chunks → agent → answer`.
-The DB helpers backing both phases exist in `database/func.py` (`insert_document`,
-`insert_chunk`, `search_chunks` using the pgvector `<=>` cosine operator) but are
-**not wired to any endpoint or agent tool**. Chunking does not exist yet.
+Two-phase RAG. Ingest: `document → chunk → embed (1024-dim) → store (pgvector)` —
+**implemented**, driven by `POST /documents`. Query: `question → embed → vector
+search (HNSW, cosine) → top-k chunks → agent → answer` — `search_chunks()` exists
+and is tested, but **nothing calls it yet**; wiring it into `core/agent.py`'s empty
+`tools` list is the next slice.
+
+Every `database/func.py` function takes `tenant_id` as its first argument — that is
+where tenant isolation is enforced. The tenant comes from the `X-Tenant-Id` header
+via `resolve_tenant()` in `api/upload_files.py`, with **no authentication**: the
+header is trusted as-is. That split is intentional (tenant columns are painful to
+retrofit; auth is not), but it means this cannot be exposed as-is.
 
 Module roles:
 - `config.py` — two settings objects. `env_settings` (`EnvSettings`) holds **all
@@ -59,13 +71,18 @@ Module roles:
   and the cached `get_model()`.
 - `core/embedding.py` — cached `get_embedder()` plus `embed_query()` / `embed_documents()`,
   which validate the returned dimension against `EMBEDDING_DIM`.
+- `core/chunking.py` — `split_text()`, a recursive character splitter (paragraph →
+  line → sentence → space → hard cut). Deliberately no tokenizer dependency.
 - `core/agent.py` — builds the pydantic-ai `agent`. `tools = []` is currently empty;
   retrieval tools go here.
-- `database/conn.py` — `psycopg_pool.ConnectionPool` with `configure=register_vector`
-  so every connection knows the pgvector type. Created with `open=False`.
-- `database/__init__.py` — `db_startup()` / `db_shutdown()` open and close the pool;
-  called from the FastAPI lifespan in `server.py`.
-- `scripts/smoke_llm.py` — the four-step endpoint verification described above.
+- `api/upload_files.py` — `POST /documents` (ingest) and `GET /documents` (list),
+  plus `resolve_tenant()`.
+- `database/conn.py` — `psycopg_pool.AsyncConnectionPool` with
+  `configure=register_vector_async`. Created with `open=False`.
+- `database/__init__.py` — `db_startup()` / `db_shutdown()` are **async**; awaited
+  from the FastAPI lifespan in `server.py`.
+- `database/func.py` — all async, all tenant-scoped.
+- `scripts/smoke_llm.py`, `scripts/smoke_ingest.py` — the two verification scripts.
 
 ## Things that will bite you
 
@@ -112,6 +129,26 @@ Module roles:
 - **First calls can be slow.** Self-hosted servers load models on demand; one cold
   start measured ~3 minutes, while warm calls to a 27B returned in ~8s. The eventual
   chat endpoint will need streaming and generous timeouts.
+- **A plain `list[float]` is not a vector.** psycopg adapts it to
+  `double precision[]`. That silently *works* on `INSERT` (PostgreSQL applies an
+  assignment cast to the `VECTOR(1024)` column) but **fails on `<=>`**, which has no
+  `vector <-> float8[]` overload. Always wrap with `pgvector.Vector(...)` — see
+  `database/func.py`. This asymmetry means ingest can look perfectly healthy while
+  every search 500s.
+- **pgvector's GUCs only exist after its library loads.** `SHOW hnsw.iterative_scan`
+  raises `unrecognized configuration parameter` on a connection that has not yet
+  touched a vector type, even on pgvector 0.8. `_supports_iterative_scan()` runs
+  `SELECT '[1]'::vector` first for exactly this reason — don't "simplify" that line
+  away or the recall fix silently turns itself off forever.
+- **Filtered HNSW under-returns.** The index walks the graph before `WHERE
+  tenant_id = …` is applied, so a sparse tenant can get fewer than `k` rows.
+  `hnsw.iterative_scan` (pgvector 0.8+) is set per-transaction via `SET LOCAL` —
+  never plain `SET`, which would leak into other users of the pooled connection.
+- **`schema.sql` only runs on a fresh volume.** It is mounted into
+  `docker-entrypoint-initdb.d`, so schema changes need `docker compose down -v` (dev)
+  or a real migration (anything else). There is no migration tool yet.
+- **The dev DB is on port 5433, not 5432**, set in `docker-compose.override.yaml` to
+  avoid colliding with other local Postgres instances.
 - **Docker containers can't reach your `localhost`.** Use `host.docker.internal` or a
   LAN address in `CHAT_BASE_URL` when running under compose.
 - Inline comments are in Traditional Chinese — keep new comments consistent with

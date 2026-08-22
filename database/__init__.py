@@ -1,10 +1,10 @@
 from database.conn import pool
 
 
-def db_startup():
-    pool.open()
-    pool.wait()
+async def db_startup():
+    await pool.open()
+    await pool.wait()
 
 
-def db_shutdown():
-    pool.close()
+async def db_shutdown():
+    await pool.close()
