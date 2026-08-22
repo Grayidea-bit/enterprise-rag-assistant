@@ -1,5 +1,5 @@
--- createdb enterprise_rag
--- psql enterprise_rag -f database/sql/schema.sql
+-- 0001_initial:目前的完整 schema。這個專案還沒發佈過,所以初始狀態合併成一支。
+-- 之後的變更請新增 0002_*.sql,不要改這一支。
 
 CREATE EXTENSION IF NOT EXISTS vector;
 -- 混合檢索的詞彙那一路。之所以用 trigram 而不是 tsvector,是因為

@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from api.deps import resolve_tenant
 from core.chunking import DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP, split_text
+from core.extract import SUPPORTED_SUFFIXES, ExtractionError, extract
 from core.embedding import embed_documents
 from database.func import (
     delete_chunks,
@@ -22,9 +23,7 @@ from database.func import (
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
-# 這一刀只做純文字;PDF / docx 之後當成獨立的 parser 加進來
-ALLOWED_SUFFIXES = {".txt", ".md", ".markdown", ".text"}
-MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 
 
 class IngestResponse(BaseModel):
@@ -47,7 +46,7 @@ class DocumentSummary(BaseModel):
 
 @router.post("", status_code=201, response_model=IngestResponse)
 async def ingest_document(
-    file: UploadFile = File(..., description="純文字或 Markdown 檔"),
+    file: UploadFile = File(..., description="純文字、Markdown 或 PDF"),
     title: str | None = Form(default=None),
     chunk_size: int = Form(default=DEFAULT_CHUNK_SIZE),
     overlap: int = Form(default=DEFAULT_OVERLAP),
@@ -58,10 +57,10 @@ async def ingest_document(
         raise HTTPException(status_code=400, detail="缺少檔名")
 
     suffix = PurePosixPath(source).suffix.lower()
-    if suffix not in ALLOWED_SUFFIXES:
+    if suffix not in SUPPORTED_SUFFIXES:
         raise HTTPException(
             status_code=415,
-            detail=f"目前只支援 {sorted(ALLOWED_SUFFIXES)},收到的是 '{suffix or '(無副檔名)'}'",
+            detail=f"目前只支援 {sorted(SUPPORTED_SUFFIXES)},收到的是 '{suffix or '(無副檔名)'}'",
         )
 
     raw = await file.read()
@@ -72,11 +71,9 @@ async def ingest_document(
         )
 
     try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as e:
-        raise HTTPException(
-            status_code=400, detail=f"檔案不是有效的 UTF-8 文字:{e}"
-        ) from e
+        text = extract(source, raw)
+    except ExtractionError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     try:
         contents = split_text(text, chunk_size=chunk_size, overlap=overlap)
@@ -95,6 +92,7 @@ async def ingest_document(
         source=source,
         metadata={
             "bytes": len(raw),
+            "format": suffix.lstrip("."),
             "chunk_size": chunk_size,
             "overlap": overlap,
         },

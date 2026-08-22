@@ -45,6 +45,10 @@ class EnvSettings(BaseSettings):
         description="Embedding 向量維度（需與 schema.sql 的 VECTOR(n) 一致）",
     )
 
+    # 啟動時自動套用待執行的 migration。容器化部署很方便,但正式環境
+    # 通常會希望 migration 是獨立、可審核的一步,所以預設關閉。
+    AUTO_MIGRATE: bool = Field(default=False)
+
     # OpenAI SDK 預設 read timeout 是 600 秒,對一個 HTTP 端點來說太長了 ——
     # 端點掛住十分鐘,呼叫端只會看到連線一直不回應。
     LLM_TIMEOUT_SECONDS: float = Field(
