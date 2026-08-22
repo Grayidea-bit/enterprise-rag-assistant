@@ -48,6 +48,12 @@ class EnvSettings(BaseSettings):
         default="postgresql://graytsao@localhost:5432/enterprise_rag",
     )
 
+    # 目前沒有身分驗證,租戶由 X-Tenant-Id header 帶入;沒帶就落到這個預設值
+    DEFAULT_TENANT_ID: str = Field(
+        default="default",
+        description="X-Tenant-Id 未帶時使用的租戶",
+    )
+
     model_config = SettingsConfigDict(
         env_file=ENV_PATH,
         env_file_encoding="utf-8",
