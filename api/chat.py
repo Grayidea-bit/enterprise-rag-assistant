@@ -10,6 +10,7 @@
 
 import json
 from collections.abc import AsyncIterator
+from typing import Literal
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -24,7 +25,7 @@ from database.func import (
     append_message,
     create_conversation,
     list_messages,
-    search_chunks,
+    retrieve,
     set_conversation_title,
 )
 
@@ -38,6 +39,8 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     limit: int = Field(default=5, ge=1, le=50)
     max_distance: float | None = Field(default=None, ge=0)
+    # 不給就用 env 的 RETRIEVAL_MODE;給了可以直接比較兩種模式
+    mode: Literal["vector", "hybrid"] | None = None
 
 
 class ChatRequest(BaseModel):
@@ -115,8 +118,13 @@ async def search(
 ) -> list[Source]:
     """純向量檢索,不經過 LLM。"""
     embedding = await embed_query(body.query)
-    rows = await search_chunks(
-        tenant_id, embedding, limit=body.limit, max_distance=body.max_distance
+    rows = await retrieve(
+        tenant_id,
+        embedding,
+        body.query,
+        limit=body.limit,
+        max_distance=body.max_distance,
+        mode=body.mode,
     )
     return [
         _to_source(Retrieved(content=r[0], distance=float(r[1]), title=r[2], source=r[3]))

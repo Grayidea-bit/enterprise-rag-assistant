@@ -10,12 +10,12 @@ through the OpenAI-compatible interface, and the endpoint, key, and model names
 all live in `.env`. Switching between a self-hosted Ollama, NVIDIA NIM, vLLM, or
 OpenAI itself is a one-file change — no code edits.
 
-> **Status: usable end to end, with a UI.** Ingest (upload → chunk → embed → store),
-> query (retrieve → cite → answer, streamed), multi-turn conversations, and a chat
-> interface at `GET /` are all implemented and verified by four smoke tests, with
-> per-tenant isolation enforced in the data layer. What's still missing:
-> **authentication**, PDF/docx parsing, retrieval-quality evaluation, and schema
-> migrations. See the [Roadmap](#roadmap).
+> **Status: usable end to end, with a UI and a retrieval benchmark.** Ingest, query,
+> multi-turn conversations, hybrid retrieval, and a chat interface at `GET /` are
+> implemented, verified by four smoke tests, and measured by an evaluation harness
+> with a 20-document / 36-question ground-truth set. What's still missing:
+> **authentication**, PDF/docx parsing, request timeouts, and schema migrations. See
+> the [Roadmap](#roadmap).
 
 ---
 
@@ -106,7 +106,10 @@ changing `.env` alone.
 │   └── sql/
 │       ├── schema.sql     # documents + chunks tables, HNSW index
 │       └── reset.sql      # drops tables (dev only)
+├── eval/
+│   └── dataset.json       # 20 documents, 36 questions with ground truth
 ├── scripts/
+│   ├── eval_retrieval.py  # recall@k / MRR, vector vs hybrid
 │   ├── smoke_llm.py       # Verifies config → embedding → chat → tool calling
 │   ├── smoke_ingest.py    # Verifies upload → chunk → embed → store → isolation
 │   ├── smoke_chat.py      # Verifies search → cited answer → refusal → streaming
@@ -150,6 +153,7 @@ cp .env.example .env
 | `EMBEDDING_API_KEY`  |          | See the fallback rule below                               |
 | `EMBEDDING_MODEL`    |    ✅    | Embedding model name                                      |
 | `EMBEDDING_DIM`      |          | Default `1024`; must match `VECTOR(n)` in `schema.sql`    |
+| `RETRIEVAL_MODE`     |          | `hybrid` (default) or `vector` — see [Retrieval](#retrieval) |
 | `DEFAULT_TENANT_ID`  |          | Tenant used when no `X-Tenant-Id` header is sent           |
 | `DATABASE_URL`       |          | PostgreSQL DSN                                            |
 
@@ -191,6 +195,68 @@ EMBEDDING_DIM=1024
 | Key      | Description             |
 | -------- | ----------------------- |
 | `prompt` | The agent system prompt |
+
+## Retrieval
+
+Two modes, switchable with `RETRIEVAL_MODE` in `.env` or per-request via `"mode"` on
+`POST /search`:
+
+- **`vector`** — cosine kNN over the HNSW index.
+- **`hybrid`** (default) — the vector ranking fused with a trigram lexical ranking
+  using **Reciprocal Rank Fusion** (`score = Σ 1/(60 + rank)`). RRF compares only
+  ranks, so the two arms' wildly different score scales never have to be reconciled.
+
+### Why trigram and not `tsvector`
+
+PostgreSQL's full-text search does not segment Chinese. The entire sentence becomes a
+single token:
+
+```sql
+SELECT to_tsvector('simple', '國內出差住宿費核實報支上限為新臺幣二千八百元');
+-- → '國內出差住宿費核實報支上限為新臺幣二千八百元':1     ← one token, useless
+
+SELECT to_tsvector('english', 'lodging expenses are reimbursed up to 2800 dollars');
+-- → '2800':7 'dollar':8 'expens':2 'lodg':1 'reimburs':4  ← works fine
+```
+
+So the lexical arm uses `pg_trgm` character trigrams instead, which are
+language-agnostic. On Chinese they behave close to exact substring matching —
+measured `word_similarity` was 0.50–0.71 for a matching chunk and **exactly 0.0** for
+everything else. That sparseness is why the lexical arm filters to non-zero matches
+before fusion; feeding a list of arbitrarily-ordered zero-score rows into RRF would
+just inject noise.
+
+`pg_trgm`'s default `word_similarity_threshold` of 0.6 is too strict here (a correct
+match measured 0.50 and would be discarded), so `search_chunks_hybrid` lowers it to
+0.25 with `SET LOCAL`, scoped to the transaction.
+
+### Measured results
+
+```bash
+python scripts/eval_retrieval.py --chunk-size 150 --overlap 30
+```
+
+20 documents (6 with answers, 14 topically-adjacent distractors sharing vocabulary),
+36 questions in three flavours — `semantic` (paraphrased), `lexical` (shares wording),
+and `exact` (hinges on a figure or form code, dense retrieval's classic weak spot).
+Ground truth is a `must_contain` substring rather than a chunk id, so the eval set
+survives changes to the chunking strategy.
+
+| Mode | recall@1 | recall@3 | recall@5 | MRR | ms/query |
+| --- | --- | --- | --- | --- | --- |
+| vector | 94.4% | 100% | 100% | 0.972 | 7 |
+| **hybrid** | **97.2%** | 100% | 100% | **0.986** | 9 |
+
+**Read this honestly: the win is small and the benchmark is saturated.** `bge-m3` is
+a strong multilingual retriever and already handles exact identifiers well — a direct
+probe of `IR-001`, `千分之一`, `百分之四十` found the right chunk at rank 1–2 with
+vector alone. Hybrid moved one question from rank 2 to rank 1; recall@3 and recall@5
+were already at ceiling for both modes, so only recall@1 and MRR carry any signal at
+this corpus size (31 chunks).
+
+The benchmark's job right now is to be a **regression guard and a harness**, not proof
+that hybrid is dramatically better. Making it discriminate properly needs a corpus an
+order of magnitude larger — that's tracked in the Roadmap.
 
 ## The chat UI
 
@@ -299,7 +365,13 @@ curl -X POST http://localhost:8000/search \
 ```
 
 `limit` is 1–50 (default 5). `max_distance` optionally drops hits above a cosine
-distance — without it you always get `limit` rows back, however irrelevant.
+distance — without it you always get `limit` rows back, however irrelevant. In hybrid
+mode `max_distance` constrains **only the vector arm**: a chunk found purely by literal
+match can legitimately sit far away in embedding space, and filtering on distance would
+silently delete the lexical arm's whole contribution.
+
+`"mode": "vector" | "hybrid"` overrides `RETRIEVAL_MODE` for a single request, which is
+how the evaluation harness compares the two.
 
 ### `POST /chat` — retrieval-augmented answer
 
@@ -488,7 +560,10 @@ the search until the limit is met, and degrades gracefully on older pgvector.
 - [x] Multi-turn conversations with persisted history and sources
 - [x] Single-file chat UI at `GET /` — streaming, citations, tenant switcher
 - [ ] Authentication in front of `resolve_tenant()`
-- [ ] Retrieval-quality evaluation (recall@k), hybrid BM25 + vector search, reranking
+- [x] Retrieval evaluation harness (recall@k, MRR, split by question type)
+- [x] Hybrid retrieval: vector + trigram lexical, fused with RRF
+- [ ] A corpus large enough for the benchmark to discriminate above recall@1
+- [ ] Reranking (no cross-encoder available on the current endpoint)
 - [ ] Timeouts and `UsageLimits` on `/chat`
 - [ ] PDF / docx parsing (currently plain text and Markdown only)
 - [ ] Schema migrations (`schema.sql` only runs on a fresh volume)

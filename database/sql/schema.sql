@@ -2,6 +2,9 @@
 -- psql enterprise_rag -f database/sql/schema.sql
 
 CREATE EXTENSION IF NOT EXISTS vector;
+-- 混合檢索的詞彙那一路。之所以用 trigram 而不是 tsvector,是因為
+-- to_tsvector 對中文不分詞 —— 整句話會變成單一 token,全文檢索完全失效。
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- 文件層級:原始檔、metadata
 -- tenant_id 是租戶隔離的依據。目前沒有身分驗證,值由 X-Tenant-Id header 帶入,
@@ -40,6 +43,10 @@ CREATE INDEX IF NOT EXISTS idx_chunks_tenant
 -- CASCADE 刪除與依序取回 chunk 都會用到
 CREATE INDEX IF NOT EXISTS idx_chunks_document
     ON chunks (document_id, chunk_index);
+
+-- 詞彙檢索用。支援 <% (word_similarity) 運算子
+CREATE INDEX IF NOT EXISTS idx_chunks_content_trgm
+    ON chunks USING gin (content gin_trgm_ops);
 
 -- 對話層級:一個 conversation 就是一串問答
 CREATE TABLE IF NOT EXISTS conversations (

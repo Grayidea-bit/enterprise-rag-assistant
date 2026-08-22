@@ -114,7 +114,22 @@ async def main() -> int:
             empty = (await client.post("/search", headers=b, json={"query": "住宿費"})).json()
             if empty:
                 raise RuntimeError(f"空租戶不該有結果: {empty}")
-            return f"{len(hits)} 筆(最近 {hits[0]['distance']:.4f}),空租戶回空陣列"
+            # 兩種檢索模式都要能用(mode 可由請求覆寫 env 的 RETRIEVAL_MODE)
+            modes = {}
+            for mode in ("vector", "hybrid"):
+                r = await client.post(
+                    "/search", headers=a, json={"query": "住宿費可以報多少?", "mode": mode}
+                )
+                if r.status_code != 200 or not r.json():
+                    raise RuntimeError(f"mode={mode} 檢索失敗:HTTP {r.status_code}")
+                modes[mode] = len(r.json())
+            bad = await client.post("/search", headers=a, json={"query": "x", "mode": "bogus"})
+            if bad.status_code != 422:
+                raise RuntimeError(f"無效 mode 應回 422,實際 {bad.status_code}")
+            return (
+                f"{len(hits)} 筆(最近 {hits[0]['distance']:.4f})、空租戶回空陣列、"
+                f"vector/hybrid 各 {modes['vector']}/{modes['hybrid']} 筆、無效 mode 回 422"
+            )
 
         async def t_chat():
             r = await client.post(

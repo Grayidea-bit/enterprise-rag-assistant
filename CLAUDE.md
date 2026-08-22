@@ -10,7 +10,7 @@ end**: config, the LLM/embedding layer, chunking, the async DB layer, `tenant_id
 isolation, ingest, query (`/search`, `/chat`, `/chat/stream`), multi-turn
 conversations, and a single-file chat UI at `GET /` are all implemented and verified
 by the four smoke scripts. **Still missing**: authentication, PDF/docx parsing,
-retrieval-quality evaluation, request timeouts, and schema migrations. See the
+request timeouts, and schema migrations. See the
 Roadmap in `README.md` before assuming an endpoint exists.
 
 Currently verified against a self-hosted Ollama (`qwen3.8:27b` chat, `bge-m3`
@@ -50,6 +50,11 @@ only automated verification; all exit non-zero on failure:
 | `scripts/smoke_ingest.py` | upload → chunk → embed → store → isolation → errors | + DB |
 | `scripts/smoke_chat.py` | search → cited answer → refusal → SSE → validation | + DB |
 | `scripts/smoke_conversation.py` | multi-turn history, isolation, cascade | + DB |
+
+`scripts/eval_retrieval.py` is a benchmark, not a test — it ingests `eval/dataset.json`
+into its own tenant and reports recall@k / MRR for each retrieval mode. Run it after
+touching chunking, embeddings, or `search_chunks*`; a drop in recall@1 or MRR is a
+regression even though nothing "fails".
 
 Run the relevant one after touching `core/`, `config.py`, `database/`, or `api/`.
 
@@ -96,7 +101,9 @@ Module roles:
   `configure=register_vector_async`. Created with `open=False`.
 - `database/__init__.py` — `db_startup()` / `db_shutdown()` are **async**; awaited
   from the FastAPI lifespan in `server.py`.
-- `database/func.py` — all async, all tenant-scoped.
+- `database/func.py` — all async, all tenant-scoped. `retrieve()` dispatches on
+  `RETRIEVAL_MODE` to either `search_chunks` (vector) or `search_chunks_hybrid`
+  (vector + trigram fused with RRF). Call `retrieve()`, not the two directly.
 - `scripts/smoke_llm.py`, `scripts/smoke_ingest.py` — the two verification scripts.
 
 ## Things that will bite you
@@ -157,6 +164,26 @@ Module roles:
   validates the conversation *outside* the streaming response so a bad
   `conversation_id` can still return a real 404; once the generator yields, the status
   code is fixed and errors can only be reported as an SSE `error` event.
+- **`to_tsvector` does not segment Chinese** — a whole sentence becomes one token, so
+  PostgreSQL full-text search is useless here. The lexical arm uses `pg_trgm`
+  character trigrams instead. On Chinese those score 0.5–0.7 for a real match and
+  **exactly 0.0** for everything else, so the lexical CTE must filter to non-zero
+  matches (`%(text)s <%% c.content`); feeding arbitrarily-ordered zero-score rows into
+  RRF would inject pure noise.
+- **`pg_trgm`'s default `word_similarity_threshold` (0.6) is too strict for Chinese.**
+  A correct match measured 0.50 and would be thrown away. `search_chunks_hybrid`
+  lowers it to 0.25 via `SET LOCAL` — and note `SET LOCAL` is a *utility statement*
+  that rejects `%s` parameters, so the value is interpolated through `float()`.
+  Same GUC-registration caveat as pgvector: the parameter only exists once the library
+  has loaded in that session.
+- **`max_distance` applies only to the vector arm in hybrid mode.** A chunk found
+  purely by literal match can legitimately be far away in embedding space; filtering
+  the fused result on distance would silently delete the lexical arm's contribution.
+- **The retrieval benchmark is saturated above recall@1.** With 31 chunks both modes
+  hit 100% recall@3, so only recall@1 and MRR carry signal. Don't read a change in
+  recall@5 as meaningful, and don't claim hybrid is a big win — measured, it is
+  +2.8% recall@1. It earns its place as insurance and as a harness, not as a
+  demonstrated leap.
 - **`RagDeps.retrieved` is a deliberate side channel.** A tool's return value goes to
   the *model*; the HTTP caller also needs to know which chunks were cited, so
   `search_knowledge_base` appends its hits to `ctx.deps.retrieved` and the endpoint

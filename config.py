@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import (
@@ -42,6 +43,12 @@ class EnvSettings(BaseSettings):
     EMBEDDING_DIM: int = Field(
         default=1024,
         description="Embedding 向量維度（需與 schema.sql 的 VECTOR(n) 一致）",
+    )
+
+    # vector = 只用向量;hybrid = 向量 + trigram 詞彙,用 RRF 融合
+    RETRIEVAL_MODE: Literal["vector", "hybrid"] = Field(
+        default="hybrid",
+        description="檢索模式",
     )
 
     DATABASE_URL: str = Field(
