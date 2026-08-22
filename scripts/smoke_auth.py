@@ -1,6 +1,6 @@
 """API 金鑰認證 smoke test。
 
-    python scripts/smoke_auth.py
+python scripts/smoke_auth.py
 """
 
 import asyncio
@@ -10,15 +10,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import httpx  # noqa: E402
+import httpx
 
-from config import env_settings  # noqa: E402
-from core.auth import generate_key, hash_key  # noqa: E402
-from database import db_shutdown, db_startup  # noqa: E402
-from database.conn import pool  # noqa: E402
-from database.func import insert_api_key, list_api_keys, revoke_api_key  # noqa: E402
-from scripts._smoke_auth import bogus, drop_keys, mint  # noqa: E402
-from server import app  # noqa: E402
+from config import env_settings
+from core.auth import generate_key
+from database import db_shutdown, db_startup
+from database.conn import pool
+from database.func import insert_api_key, list_api_keys, revoke_api_key
+from scripts._smoke_auth import bogus, drop_keys, mint
+from server import app
 
 LINE = "─" * 62
 TENANT_A = "smoke-auth-a"
@@ -108,15 +108,11 @@ async def main() -> int:
 
         async def t_header_cannot_override():
             """最關鍵的一條:帶了合法金鑰還想用 X-Tenant-Id 宣稱別的租戶。"""
-            r = await client.get(
-                "/documents", headers={**b, "X-Tenant-Id": TENANT_A}
-            )
+            r = await client.get("/documents", headers={**b, "X-Tenant-Id": TENANT_A})
             if r.status_code != 200:
                 raise RuntimeError(f"HTTP {r.status_code}")
             if r.json():
-                raise RuntimeError(
-                    f"X-Tenant-Id 竟然蓋過了金鑰,B 看到了 A 的資料: {r.json()}"
-                )
+                raise RuntimeError(f"X-Tenant-Id 竟然蓋過了金鑰,B 看到了 A 的資料: {r.json()}")
             return "X-Tenant-Id 被完全忽略,租戶只由金鑰決定"
 
         async def t_x_api_key_header():

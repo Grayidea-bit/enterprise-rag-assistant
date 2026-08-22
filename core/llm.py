@@ -23,9 +23,7 @@ def build_provider(base_url: str, api_key: str | None) -> OpenAIProvider:
     http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(env_settings.LLM_TIMEOUT_SECONDS, connect=10.0)
     )
-    return OpenAIProvider(
-        base_url=base_url, api_key=api_key or None, http_client=http_client
-    )
+    return OpenAIProvider(base_url=base_url, api_key=api_key or None, http_client=http_client)
 
 
 @cache

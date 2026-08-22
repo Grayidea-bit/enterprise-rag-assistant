@@ -84,25 +84,22 @@ async def insert_chunks(
 ) -> int:
     """批次寫入 chunk。contents 與 embeddings 必須等長且順序一致。"""
     if len(contents) != len(embeddings):
-        raise ValueError(
-            f"contents({len(contents)}) 與 embeddings({len(embeddings)}) 長度不一致"
-        )
+        raise ValueError(f"contents({len(contents)}) 與 embeddings({len(embeddings)}) 長度不一致")
     if not contents:
         return 0
 
     rows = [
         (document_id, tenant_id, content, Vector(list(embedding)), index)
-        for index, (content, embedding) in enumerate(zip(contents, embeddings))
+        for index, (content, embedding) in enumerate(zip(contents, embeddings, strict=True))
     ]
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.executemany(
-                """
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.executemany(
+            """
                 INSERT INTO chunks (document_id, tenant_id, content, embedding, chunk_index)
                 VALUES (%s, %s, %s, %s, %s)
                 """,
-                rows,
-            )
+            rows,
+        )
     return len(rows)
 
 
@@ -220,8 +217,7 @@ async def search_chunks_hybrid(
         # SET LOCAL 是 utility 語句,不接受參數化的 %s;值是模組常數,
         # 用 float() 強制轉型確保內插進去的一定是數字
         await conn.execute(
-            "SET LOCAL pg_trgm.word_similarity_threshold = "
-            f"{float(WORD_SIMILARITY_THRESHOLD)}"
+            f"SET LOCAL pg_trgm.word_similarity_threshold = {float(WORD_SIMILARITY_THRESHOLD)}"
         )
         return await (await conn.execute(sql, params)).fetchall()
 
@@ -237,9 +233,7 @@ async def retrieve(
     """依設定的檢索模式取回段落。mode 不給就用 env 的 RETRIEVAL_MODE。"""
     if (mode or env_settings.RETRIEVAL_MODE) == "vector":
         return await search_chunks(tenant_id, query_embedding, limit, max_distance)
-    return await search_chunks_hybrid(
-        tenant_id, query_embedding, query_text, limit, max_distance
-    )
+    return await search_chunks_hybrid(tenant_id, query_embedding, query_text, limit, max_distance)
 
 
 async def list_documents(tenant_id: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -299,6 +293,31 @@ async def conversation_exists(tenant_id: str, conversation_id: int) -> bool:
             )
         ).fetchone()
         return row is not None
+
+
+async def get_conversation(tenant_id: str, conversation_id: int) -> dict[str, Any] | None:
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                """
+                SELECT c.id, c.title, c.created_at, c.updated_at, COUNT(m.id)
+                FROM conversations c
+                LEFT JOIN messages m ON m.conversation_id = c.id
+                WHERE c.id = %s AND c.tenant_id = %s
+                GROUP BY c.id
+                """,
+                (conversation_id, tenant_id),
+            )
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "title": row[1],
+        "created_at": row[2],
+        "updated_at": row[3],
+        "message_count": row[4],
+    }
 
 
 async def list_conversations(tenant_id: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -391,9 +410,7 @@ async def append_message(
         return row[0]
 
 
-async def set_conversation_title(
-    tenant_id: str, conversation_id: int, title: str
-) -> None:
+async def set_conversation_title(tenant_id: str, conversation_id: int, title: str) -> None:
     async with pool.connection() as conn:
         await conn.execute(
             "UPDATE conversations SET title = %s WHERE id = %s AND tenant_id = %s AND title IS NULL",
@@ -413,9 +430,7 @@ async def delete_conversation(tenant_id: str, conversation_id: int) -> bool:
 # ── API 金鑰 ────────────────────────────────────────────────────
 
 
-async def insert_api_key(
-    key_hash: str, tenant_id: str, name: str | None, prefix: str
-) -> int:
+async def insert_api_key(key_hash: str, tenant_id: str, name: str | None, prefix: str) -> int:
     async with pool.connection() as conn:
         row = await (
             await conn.execute(

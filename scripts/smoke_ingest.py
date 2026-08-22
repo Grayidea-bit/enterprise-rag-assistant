@@ -14,15 +14,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import httpx  # noqa: E402
+import httpx
 
-from config import env_settings  # noqa: E402
-from database import db_shutdown, db_startup  # noqa: E402
-from database.conn import pool  # noqa: E402
-from database.func import search_chunks  # noqa: E402
-from scripts._smoke_auth import drop_keys, mint  # noqa: E402
-from tests.pdf_fixture import make_pdf  # noqa: E402
-from server import app  # noqa: E402
+from config import env_settings
+from database import db_shutdown, db_startup
+from database.conn import pool
+from database.func import search_chunks
+from scripts._smoke_auth import drop_keys, mint
+from server import app
+from tests.pdf_fixture import make_pdf
 
 LINE = "─" * 62
 TENANT_A = "smoke-tenant-a"
@@ -132,9 +132,7 @@ async def main() -> int:
 
         async def t_upload():
             # 順便驗 Form 參數:縮小 chunk_size 逼出多塊,批次寫入才真的被走到
-            r = await upload(
-                client, HA, "理賠手冊.md", DOC_A, chunk_size=200, overlap=40
-            )
+            r = await upload(client, HA, "理賠手冊.md", DOC_A, chunk_size=200, overlap=40)
             if r.status_code != 201:
                 raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
             body = r.json()
@@ -169,9 +167,7 @@ async def main() -> int:
                 raise RuntimeError("重複上傳同一 source 應該回 replaced=True")
             if body["document_id"] != state["doc_a"]:
                 raise RuntimeError("重複上傳不該產生新的 document_id")
-            listing = (
-                await client.get("/documents", headers=HA)
-            ).json()
+            listing = (await client.get("/documents", headers=HA)).json()
             if len(listing) != 1:
                 raise RuntimeError(f"同一 source 上傳兩次卻有 {len(listing)} 份文件")
             return f"覆蓋成功,仍是 1 份文件 / {listing[0]['chunk_count']} chunks"
@@ -237,12 +233,15 @@ async def main() -> int:
         await check("列表隔離", "[4/8] GET /documents 的租戶隔離", t_list_isolation)
         await check("檢索隔離", "[5/8] 向量檢索的租戶隔離", t_search_isolation)
         await check("距離門檻", "[6/8] max_distance 擋掉不相關結果", t_distance_threshold)
+
         async def t_pdf():
-            pdf = make_pdf([
-                "Procurement Policy",
-                "Purchases above NTD 300000 require three written quotes.",
-                "Acceptance must be completed within seven working days.",
-            ])
+            pdf = make_pdf(
+                [
+                    "Procurement Policy",
+                    "Purchases above NTD 300000 require three written quotes.",
+                    "Acceptance must be completed within seven working days.",
+                ]
+            )
             r = await client.post(
                 "/documents",
                 headers=HA,

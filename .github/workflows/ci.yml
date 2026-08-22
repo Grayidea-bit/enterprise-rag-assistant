@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff==0.16.4
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: enterprise_rag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d enterprise_rag"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:secret@localhost:5432/enterprise_rag
+      # 整合測試把模型換成 pydantic-ai 的測試替身,所以這些值只要能通過
+      # 設定驗證即可 —— CI 全程不會連到任何 LLM 端點。
+      CHAT_BASE_URL: http://llm.invalid/v1
+      CHAT_MODEL: stub-chat
+      EMBEDDING_MODEL: stub-embedding
+      EMBEDDING_DIM: "1024"
+      AUTH_MODE: api_key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # 獨立一步,順便驗證 migration CLI 本身能用
+      - name: Apply migrations
+        run: python scripts/migrate.py up
+
+      - name: Run tests
+        run: pytest

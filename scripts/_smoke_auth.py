@@ -17,9 +17,7 @@ async def mint(tenant_id: str) -> dict[str, str]:
 
 async def drop_keys(*tenant_ids: str) -> None:
     async with pool.connection() as conn:
-        await conn.execute(
-            "DELETE FROM api_keys WHERE tenant_id = ANY(%s)", (list(tenant_ids),)
-        )
+        await conn.execute("DELETE FROM api_keys WHERE tenant_id = ANY(%s)", (list(tenant_ids),))
 
 
 def bogus() -> dict[str, str]:
@@ -28,4 +26,4 @@ def bogus() -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
-__all__ = ["mint", "drop_keys", "bogus", "hash_key"]
+__all__ = ["bogus", "drop_keys", "hash_key", "mint"]

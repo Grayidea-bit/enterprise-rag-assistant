@@ -1,5 +1,7 @@
 """core/chunking.py 的單元測試。純函式,不需要資料庫或 LLM。"""
 
+from itertools import pairwise
+
 import pytest
 
 from core.chunking import DEFAULT_CHUNK_SIZE, split_text
@@ -31,10 +33,8 @@ def test_overlap_carries_tail_of_previous_chunk():
     text = "".join(f"第{i}句話。" for i in range(1, 100))
     chunks = split_text(text, chunk_size=200, overlap=50)
     assert len(chunks) > 1
-    for previous, current in zip(chunks, chunks[1:]):
-        shared = max(
-            (n for n in range(1, 51) if previous.endswith(current[:n])), default=0
-        )
+    for previous, current in pairwise(chunks):
+        shared = max((n for n in range(1, 51) if previous.endswith(current[:n])), default=0)
         assert shared > 0, "相鄰區塊之間應該有重疊"
 
 

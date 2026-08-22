@@ -14,9 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.auth import generate_key  # noqa: E402
-from database import db_shutdown, db_startup  # noqa: E402
-from database.func import (  # noqa: E402
+from core.auth import generate_key
+from database import db_shutdown, db_startup
+from database.func import (
     insert_api_key,
     list_api_keys,
     revoke_api_key,
