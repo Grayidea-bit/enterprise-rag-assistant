@@ -63,8 +63,10 @@ class EnvSettings(BaseSettings):
     AGENT_TOOL_CALLS_LIMIT: int = Field(default=4, ge=1)
 
     # vector = 只用向量;hybrid = 向量 + trigram 詞彙,用 RRF 融合
+    # 預設 vector:在現有評估語料上 hybrid 的 recall@1 低 2.8%,
+    # 語料夠大到能發揮詞彙檢索優勢之前,不預設付這個代價
     RETRIEVAL_MODE: Literal["vector", "hybrid"] = Field(
-        default="hybrid",
+        default="vector",
         description="檢索模式",
     )
 

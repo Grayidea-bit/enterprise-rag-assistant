@@ -199,7 +199,7 @@ cp .env.example .env
 | `EMBEDDING_API_KEY`  |          | See the fallback rule below                               |
 | `EMBEDDING_MODEL`    |    ✅    | Embedding model name                                      |
 | `EMBEDDING_DIM`      |          | Default `1024`; must match `VECTOR(n)` in the migrations  |
-| `RETRIEVAL_MODE`     |          | `hybrid` (default) or `vector` — see [Retrieval](#retrieval) |
+| `RETRIEVAL_MODE`     |          | `vector` (default) or `hybrid` — see [Retrieval](#retrieval) |
 | `LLM_TIMEOUT_SECONDS`|          | Per-request timeout, default `120` (SDK default is 600)   |
 | `AGENT_REQUEST_LIMIT`|          | Model calls per `/chat` run, default `6`                  |
 | `AGENT_TOOL_CALLS_LIMIT` |      | Tool calls per `/chat` run, default `4`                   |
@@ -282,8 +282,8 @@ startup listing anything outstanding.
 Two modes, switchable with `RETRIEVAL_MODE` in `.env` or per-request via `"mode"` on
 `POST /search`:
 
-- **`vector`** — cosine kNN over the HNSW index.
-- **`hybrid`** (default) — the vector ranking fused with a trigram lexical ranking
+- **`vector`** (default) — cosine kNN over the HNSW index.
+- **`hybrid`** — the vector ranking fused with a trigram lexical ranking
   using **Reciprocal Rank Fusion** (`score = Σ 1/(60 + rank)`). RRF compares only
   ranks, so the two arms' wildly different score scales never have to be reconciled.
 
@@ -339,9 +339,11 @@ wrong way (「超過三十萬的採購案要幾家報價?」, rank 1 → rank 2)
 36 *is* the whole 2.8% difference. recall@3 and recall@5 are at ceiling for both modes,
 so only recall@1 and MRR carry any signal at this corpus size.
 
-Hybrid remains available, and the case for it is the failure mode it covers rather than
-this measurement — 21 chunks is far too few to exercise lexical retrieval's advantage.
-But it has not earned a claim of being better here, so it isn't given one. The
+**`RETRIEVAL_MODE` therefore defaults to `vector`.** Hybrid remains one line of `.env`
+away (or one field on a single request), and the case for it is the failure mode it
+covers rather than this measurement — 21 chunks is far too few to exercise lexical
+retrieval's advantage. But it has not earned a claim of being better here, so it isn't
+given one, and it isn't given the default either. The
 benchmark's job right now is to be a **regression guard and a harness**. Making it
 discriminate properly needs a corpus an order of magnitude larger — that's tracked in
 the Roadmap.

@@ -76,7 +76,7 @@ class TestDefaults:
         s = settings()
         assert s.AUTH_MODE == "api_key", "預設就該要求認證"
         assert s.AUTO_MIGRATE is False, "預設不該在啟動時自動改 schema"
-        assert s.RETRIEVAL_MODE == "hybrid"
+        assert s.RETRIEVAL_MODE == "vector", "評估語料上 vector 的 recall@1 較高"
         assert s.EMBEDDING_DIM == 1024
         assert s.LLM_TIMEOUT_SECONDS < 600, "必須比 OpenAI SDK 的預設短"
 
