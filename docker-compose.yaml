@@ -1,6 +1,7 @@
 services:
   db:
-    image: pgvector/pgvector:pg18
+    # 釘到 pgvector 版本而非浮動的 pg18 tag,讓 benchmark 數字可以重現
+    image: pgvector/pgvector:0.8.6-pg18
     environment:
       POSTGRES_DB: enterprise_rag
       POSTGRES_PASSWORD: secret

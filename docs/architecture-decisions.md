@@ -200,19 +200,45 @@ paraphrased, 12 exact-figure):
 
 | Mode | recall@1 | recall@3 | recall@5 | MRR | ms/query |
 | --- | --- | --- | --- | --- | --- |
-| vector | 94.4% | 100% | 100% | 0.972 | 7 |
-| hybrid | 97.2% | 100% | 100% | 0.986 | 9 |
+| vector | 91.7% | 100% | 100% | 0.958 | ~5 |
+| hybrid | 88.9% | 100% | 100% | 0.944 | ~7 |
 
-**Read honestly, this is a small win on a saturated benchmark.** `bge-m3` is a strong
-multilingual retriever that already handles exact identifiers well; a direct probe of
-`IR-001`, `千分之一`, and `百分之四十` found the right chunk at rank 1–2 with vector alone.
-Hybrid moved one question from rank 2 to rank 1. With 31 chunks in the corpus, recall@3
-and recall@5 are at ceiling for both modes, so only recall@1 and MRR carry any signal.
+Re-measured 2026-08-25 against `eval/dataset.json` as it stands in this repository
+(21 chunks at `chunk_size=300 overlap=60`), on `pgvector/pgvector:0.8.6-pg18` with
+`bge-m3`. **An earlier revision of this document reported 94.4% / 97.2% over a
+31-chunk corpus. Those numbers could not be reproduced** — see "Reproducing this"
+below — so they have been replaced rather than explained away.
 
-Hybrid is kept because it is never worse, costs ~2ms, and covers a failure mode dense
-retrieval is known to have. It is **not** kept because the benchmark proved it
-transformative — it didn't, and the benchmark is not currently capable of proving that
-either way. Making it discriminate needs a corpus an order of magnitude larger.
+**Read honestly, this is a small loss on a saturated benchmark.** `bge-m3` is a strong
+multilingual retriever that already handles exact identifiers well: every `exact`
+question (n=12) is answered at recall@5 by *both* modes, and vector alone puts them at
+rank 1 often enough to score 91.7% overall. Hybrid moves exactly one question the wrong
+way — 「超過三十萬的採購案要幾家報價?」 falls from rank 1 to rank 2 — which on 36
+questions is the entire −2.8% gap. With 21 chunks in the corpus, recall@3 and recall@5
+are at ceiling for both modes, so only recall@1 and MRR carry any signal at all.
+
+**This does not overturn the decision to keep hybrid, but it does change what can be
+claimed for it.** The reason to keep it is unchanged: it costs ~2ms and covers a failure
+mode dense retrieval is known to have, on a corpus far too small to exercise that mode.
+What can no longer be said is that it is "never worse" — on this corpus it is measurably,
+if marginally, worse. Whether it stays the default in `RETRIEVAL_MODE` is a judgement
+about expected production corpora, not something this benchmark can settle.
+
+**Reproducing this.** The gap between the old and current numbers is not environmental
+drift; three candidate causes were tested and eliminated on 2026-08-25:
+
+| Hypothesis | Test | Result |
+| --- | --- | --- |
+| The embedding model changed | `bge-m3` on the endpoint was last modified 2026-08-21, before the benchmark commit (2026-08-22) | Not the cause |
+| HNSW graph order varies per build | `docker compose down -v`, rebuild, re-run | Identical to 3 decimal places |
+| PostgreSQL / `pg_trgm` version | pg 18.6 vs pg 17.11, same pgvector | Identical |
+
+Nor can the 31-chunk figure be recovered: `split_text()` over the current dataset yields
+21 chunks at `chunk_size=300`, and 27 even at 200. The old numbers were therefore measured
+against a corpus that differs from the one committed here. The image is now pinned to
+`0.8.6-pg18` instead of the floating `pg18` tag so that this class of doubt is cheaper to
+settle next time. Making the benchmark actually discriminate still needs a corpus an order
+of magnitude larger.
 
 ---
 

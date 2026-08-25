@@ -325,19 +325,32 @@ survives changes to the chunking strategy.
 
 | Mode | recall@1 | recall@3 | recall@5 | MRR | ms/query |
 | --- | --- | --- | --- | --- | --- |
-| vector | 94.4% | 100% | 100% | 0.972 | 7 |
-| **hybrid** | **97.2%** | 100% | 100% | **0.986** | 9 |
+| **vector** | **91.7%** | 100% | 100% | **0.958** | ~5 |
+| hybrid | 88.9% | 100% | 100% | 0.944 | ~7 |
 
-**Read this honestly: the win is small and the benchmark is saturated.** `bge-m3` is
-a strong multilingual retriever and already handles exact identifiers well — a direct
-probe of `IR-001`, `千分之一`, `百分之四十` found the right chunk at rank 1–2 with
-vector alone. Hybrid moved one question from rank 2 to rank 1; recall@3 and recall@5
-were already at ceiling for both modes, so only recall@1 and MRR carry any signal at
-this corpus size (31 chunks).
+*Measured 2026-08-25 on `pgvector/pgvector:0.8.6-pg18` with `bge-m3`, over the 21 chunks
+this dataset produces at `chunk_size=300 overlap=60`.*
 
-The benchmark's job right now is to be a **regression guard and a harness**, not proof
-that hybrid is dramatically better. Making it discriminate properly needs a corpus an
-order of magnitude larger — that's tracked in the Roadmap.
+**Read this honestly: the benchmark is saturated, and on this corpus hybrid is slightly
+*behind*.** `bge-m3` is a strong multilingual retriever that already handles exact
+identifiers well — all 12 `exact` questions are covered by both modes, and vector alone
+ranks them well enough to reach 91.7% overall. Hybrid moves exactly one question the
+wrong way (「超過三十萬的採購案要幾家報價?」, rank 1 → rank 2), and one question out of
+36 *is* the whole 2.8% difference. recall@3 and recall@5 are at ceiling for both modes,
+so only recall@1 and MRR carry any signal at this corpus size.
+
+Hybrid remains available, and the case for it is the failure mode it covers rather than
+this measurement — 21 chunks is far too few to exercise lexical retrieval's advantage.
+But it has not earned a claim of being better here, so it isn't given one. The
+benchmark's job right now is to be a **regression guard and a harness**. Making it
+discriminate properly needs a corpus an order of magnitude larger — that's tracked in
+the Roadmap.
+
+> Earlier revisions of this table reported 94.4% / 97.2% over a 31-chunk corpus. Those
+> figures could not be reproduced against the dataset committed here, and the usual
+> suspects (embedding drift, HNSW build order, PostgreSQL version) were each tested and
+> ruled out — see [architecture decisions](docs/architecture-decisions.md#8-the-two-retrieval-arms-are-combined-with-reciprocal-rank-fusion)
+> for the elimination table.
 
 ## The chat UI
 
