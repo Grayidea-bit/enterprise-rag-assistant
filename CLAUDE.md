@@ -239,11 +239,15 @@ is worse than none.
 - **`max_distance` applies only to the vector arm in hybrid mode.** A chunk found
   purely by literal match can legitimately be far away in embedding space; filtering
   the fused result on distance would silently delete the lexical arm's contribution.
-- **The retrieval benchmark is saturated above recall@1.** With 31 chunks both modes
+- **The retrieval benchmark is saturated above recall@1.** With 21 chunks both modes
   hit 100% recall@3, so only recall@1 and MRR carry signal. Don't read a change in
-  recall@5 as meaningful, and don't claim hybrid is a big win — measured, it is
-  +2.8% recall@1. It earns its place as insurance and as a harness, not as a
-  demonstrated leap.
+  recall@5 as meaningful. And do not claim hybrid is a win: re-measured 2026-08-25 it
+  is **−2.8% recall@1** (88.9% vs vector's 91.7%), one question falling from rank 1 to
+  rank 2. It is kept for the failure mode it covers, not for a demonstrated gain — this
+  corpus is far too small to exercise that mode. Earlier docs claimed +2.8% over a
+  31-chunk corpus; that is not reproducible here and embedding drift, HNSW build order,
+  and the PostgreSQL version were each tested and ruled out. The DB image is pinned to
+  `pgvector/pgvector:0.8.6-pg18` so the next such question is cheaper to settle.
 - **`RagDeps.retrieved` is a deliberate side channel.** A tool's return value goes to
   the *model*; the HTTP caller also needs to know which chunks were cited, so
   `search_knowledge_base` appends its hits to `ctx.deps.retrieved` and the endpoint
