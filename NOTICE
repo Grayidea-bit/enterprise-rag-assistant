@@ -1,0 +1,7 @@
+Enterprise RAG Assistant
+Copyright 2026 ShihChieh-Tsao
+
+This product includes software developed by third parties, distributed under
+their own licenses. Notably, container images built from this repository bundle
+psycopg, psycopg-binary, and psycopg-pool (LGPL-3.0-only); their source is
+available at https://github.com/psycopg/psycopg

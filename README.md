@@ -1,6 +1,7 @@
 # Enterprise RAG Assistant
 
 [![CI](https://github.com/Grayidea-bit/enterprise-rag-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/Grayidea-bit/enterprise-rag-assistant/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 A retrieval-augmented generation (RAG) backend for enterprise knowledge bases,
 built on **FastAPI**, **PostgreSQL + pgvector**, and **any OpenAI-compatible LLM
@@ -738,3 +739,30 @@ the search until the limit is met, and degrades gracefully on older pgvector.
   limiting** — one key can issue unlimited requests. Tracked below.
 - Uploads are capped at 2 MB and restricted to UTF-8 text; nothing is executed or
   rendered from uploaded content.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE) — you may use, modify, and
+redistribute this code, including commercially, provided you retain the license
+and attribution notices. See [`NOTICE`](NOTICE) for the attribution text that
+Apache-2.0 §4(d) asks downstream distributions to carry.
+
+Apache-2.0 was chosen over MIT for one concrete reason: it grants an **explicit
+patent licence** (§3) and terminates it on patent litigation. MIT is silent on
+patents, which is a recurring blocker in enterprise open-source review — and this
+project is aimed squarely at enterprise deployments.
+
+**One dependency deserves attention if you redistribute container images.** Most
+runtime dependencies are permissively licensed — FastAPI, pydantic-ai, pydantic,
+pydantic-settings, PyYAML, and the `pgvector` Python client are MIT; uvicorn and
+pypdf are BSD-3-Clause; python-multipart is Apache-2.0. The exception is
+**`psycopg`, `psycopg-binary`, and `psycopg-pool`, which are LGPL-3.0-only**.
+Importing psycopg from this Apache-2.0 codebase is fine and imposes nothing on
+your own source. But an image built from the `Dockerfile` *bundles* it, so
+distributing that image triggers the LGPL's distribution obligations: recipients
+must be able to obtain psycopg's source and to relink against a modified copy.
+Running the service as a network endpoint, or using the image internally, is not
+distribution and is unaffected.
+
+(The pgvector *server extension* is under the PostgreSQL Licence, but that lives
+in a database you deploy — it is not redistributed by this repository.)
