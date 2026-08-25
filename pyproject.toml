@@ -3,6 +3,9 @@ name = "enterprise-rag-assistant"
 version = "0.1.0"
 description = "A retrieval-augmented generation backend for enterprise knowledge bases"
 requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "ShihChieh-Tsao" }]
 
 [tool.ruff]
 target-version = "py313"
