@@ -32,7 +32,7 @@ services:
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
       AGENT_REQUEST_LIMIT: ${AGENT_REQUEST_LIMIT:-6}
       AGENT_TOOL_CALLS_LIMIT: ${AGENT_TOOL_CALLS_LIMIT:-4}
-      RETRIEVAL_MODE: ${RETRIEVAL_MODE:-hybrid}
+      RETRIEVAL_MODE: ${RETRIEVAL_MODE:-vector}
       AUTH_MODE: ${AUTH_MODE:-api_key}
       # 容器啟動時自動套用 migration,讓 `docker compose up` 開箱即用
       AUTO_MIGRATE: ${AUTO_MIGRATE:-true}

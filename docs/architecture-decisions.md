@@ -217,12 +217,18 @@ way — 「超過三十萬的採購案要幾家報價?」 falls from rank 1 to r
 questions is the entire −2.8% gap. With 21 chunks in the corpus, recall@3 and recall@5
 are at ceiling for both modes, so only recall@1 and MRR carry any signal at all.
 
-**This does not overturn the decision to keep hybrid, but it does change what can be
-claimed for it.** The reason to keep it is unchanged: it costs ~2ms and covers a failure
-mode dense retrieval is known to have, on a corpus far too small to exercise that mode.
-What can no longer be said is that it is "never worse" — on this corpus it is measurably,
-if marginally, worse. Whether it stays the default in `RETRIEVAL_MODE` is a judgement
-about expected production corpora, not something this benchmark can settle.
+**Hybrid is kept, but it is no longer the default.** `RETRIEVAL_MODE` now defaults to
+`vector` (changed 2026-08-25). The reason to keep hybrid available is unchanged: it costs
+~2ms and covers a failure mode dense retrieval is known to have. What can no longer be
+said is that it is "never worse" — on this corpus it is measurably, if marginally, worse,
+and defaulting to the mode that measures worse on the only evidence available is not
+defensible. Switching it on remains one line of `.env`, or one field on a single request.
+
+This cuts both ways, and the reversal condition should be stated plainly: 21 chunks is
+far too small a corpus to exercise what the lexical arm is for. A corpus an order of
+magnitude larger — or a domain heavy in identifiers, part numbers, and form codes — could
+easily flip this, and the honest move then is to re-run the benchmark and switch the
+default back, not to argue from first principles either way.
 
 **Reproducing this.** The gap between the old and current numbers is not environmental
 drift; three candidate causes were tested and eliminated on 2026-08-25:
